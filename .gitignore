@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+venv/
+.venv/
+
+# Match Logs (ignore generated log files, keep the folder)
+match_logs/*.txt
+!match_logs/.gitkeep
+
+# C/C++ compiled binaries
+*.exe
+*.o
+*.obj
+*.out
+
+# Arduino build artifacts
+*.hex
+*.bin
+build/
+
+# OS / Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
