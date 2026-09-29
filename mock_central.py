@@ -158,16 +158,19 @@ class MockCentral:
 
     def execute_random_attack(self):
         with self.lock:
+            # 1. Validate game is running
             if self.round_state != 2:
                 return ""
             attacker = self.current_turn
+            
+            # 2. Find teams that are alive to target
             alive_opponents = [t for t in self.teams if t["registered"] and not t["eliminated"] and t["id"] != attacker]
             if not alive_opponents:
                 return ""
             target_team = random.choice(alive_opponents)
             tid = target_team["id"]
 
-            # Pick a cell that hasn't been shot yet
+            # 3. Pick a random grid cell that hasn't been shot yet
             unshot = []
             for r in range(5):
                 for c in range(5):
@@ -180,9 +183,12 @@ class MockCentral:
             col_letter = chr(ord('A') + c)
             coord_str = f"{col_letter}{r + 1}"
 
+            # 4. Check hit or miss and update the target's grid
             if target_team["grid"][r][c] == 1:
                 target_team["grid"][r][c] = 3  # Hit
                 target_team["remaining"] -= 1
+                
+                # Check if this hit eliminated them entirely
                 if target_team["remaining"] <= 0:
                     target_team["eliminated"] = True
                     log_text = f"HIT! Team {attacker} sank Team {tid}'s final ship at {coord_str}! TEAM {tid} ELIMINATED!"
@@ -192,6 +198,7 @@ class MockCentral:
                 target_team["grid"][r][c] = 2  # Miss
                 log_text = f"MISS! Team {attacker} fired at Team {tid} at {coord_str} (splash)."
 
+        # 5. Log the result and automatically advance the turn
         out1 = self.add_log(log_text)
         out2 = self._advance_turn()
         return out1 + out2

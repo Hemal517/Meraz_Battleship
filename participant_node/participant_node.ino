@@ -306,21 +306,24 @@ void setup() {
 }
 
 void loop() {
-  // Drain packets that arrived via ESP-NOW since the last loop().
+  // 1. Drain packets that arrived via ESP-NOW since the last loop.
   while (pendingHead != pendingTail) {
     PendingPacket p = pendingQueue[pendingHead];
     pendingHead = (pendingHead + 1) % PENDING_QUEUE_SIZE;
     processPacket(p.data, p.len);
   }
 
-  // Keep re-sending registration (non-blocking) until Central confirms it.
+  // 2. Keep re-sending registration (non-blocking) until Central confirms it.
   // Handles the case where our very first registration packet gets lost.
   if (!registrationConfirmed && millis() - lastRegAttemptMillis > REG_RETRY_INTERVAL_MS) {
     sendRegistration();
     lastRegAttemptMillis = millis();
   }
 
+  // 3. Check for any manual commands typed into the Serial monitor
   handleSerialInput();
+  
+  // 4. Update the TFT display UI (draw screens, read touch input)
   uiTick();
 }
 

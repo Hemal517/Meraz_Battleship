@@ -277,12 +277,14 @@ void setup() {
 
 void loop() {
   // Drain packets that arrived via ESP-NOW since the last loop().
+  // We process them here in the main loop to keep the ESP-NOW callback fast and safe.
   while (pendingHead != pendingTail) {
     PendingPacket p = pendingQueue[pendingHead];
     pendingHead = (pendingHead + 1) % PENDING_QUEUE_SIZE;
-    processPacket(p.mac, p.data, p.len);
+    processPacket(p.mac, p.data, p.len); // Figure out if it's an attack or registration
   }
 
+  // Check for any commands sent from the Python dashboard over the USB cable (like START, RESET)
   handleSerialInput();
 }
 
@@ -365,22 +367,25 @@ int getTeamIDFromMAC(const uint8_t *mac) {
 // the result into the right RegAckPacket + log line + broadcast/save.
 
 void handleRegistration(const uint8_t *mac, RegistrationPacket *pkt) {
+  // 1. Identify which team is trying to register using their hardware MAC address
   int macTeam = getTeamIDFromMAC(mac);
   if (macTeam == -1) {
     Serial.println("Registration from an unrecognized MAC - ignored.");
     return;  // we never added this MAC as a peer, so we can't reply anyway
   }
 
+  // 2. Validate their ship placement (Do they overlap? Are they out of bounds?)
   uint8_t result = tryRegister(macTeam, pkt->team_id, pkt->team_name, pkt->ships,
                                 roundState, registered, teamNames, storedShips, grid,
                                 remainingShips, eliminated);
 
+  // 3. Reply to the participant node and log the event based on validation result
   switch (result) {
     case REG_OK:
       addLog("TEAM %d (%s) registered", macTeam, teamNames[macTeam - 1]);
-      sendRegAck(mac, REG_OK);
-      broadcastTurnUpdate();
-      saveGameState();
+      sendRegAck(mac, REG_OK);   // Send Success confirmation back to participant
+      broadcastTurnUpdate();     // Update all screens to show they joined
+      saveGameState();           // Save the new state to flash memory
       break;
 
     case REG_RECONNECTED:
@@ -432,12 +437,14 @@ void sendRegAck(const uint8_t *mac, uint8_t status) {
 // =====================================================================
 
 void handleAttack(const uint8_t *mac, AttackPacket *pkt) {
+  // 1. Identify who fired the torpedo based on their hardware MAC address
   int macTeam = getTeamIDFromMAC(mac);
   if (macTeam == -1) {
     Serial.println("Attack from an unrecognized MAC - ignored.");
     return;
   }
 
+  // 2. Validate the attack (Is it their turn? Is the target alive? Is the game running?)
   uint8_t previousRoundState = roundState;
   uint8_t result = tryAttack(macTeam, pkt->attacker_id, pkt->target_id, pkt->x, pkt->y,
                               roundState, currentTurnIndex, grid, remainingShips,
@@ -445,14 +452,15 @@ void handleAttack(const uint8_t *mac, AttackPacket *pkt) {
 
   int targetId = pkt->target_id, x = pkt->x, y = pkt->y;
 
+  // 3. Process the result of the attack (Hit, Miss, Sunk, or Invalid)
   switch (result) {
     case RESULT_MISS:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - MISS", macTeam, targetId, x, y);
-      sendFeedback(mac, targetId, x, y, RESULT_MISS);
+      sendFeedback(mac, targetId, x, y, RESULT_MISS); // Tell the participant they missed
       break;
     case RESULT_HIT:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - HIT", macTeam, targetId, x, y);
-      sendFeedback(mac, targetId, x, y, RESULT_HIT);
+      sendFeedback(mac, targetId, x, y, RESULT_HIT); // Tell the participant they hit a ship
       break;
     case RESULT_SUNK:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - HIT, TEAM %d ELIMINATED",

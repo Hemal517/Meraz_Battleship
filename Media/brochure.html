@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BATTLESHIP — Sponsorship Proposal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Teko:wght@500;600;700&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  @page { size: A4 landscape; margin: 0; }
+
+  :root {
+    --bg-dark: #090f16;
+    --card-bg: rgba(22, 33, 56, 0.4);
+    --cyan: #00e5ff;
+    --pink: #ff2a7a;
+    --green: #00ff88;
+    --yellow: #ffcc00;
+    --purple: #9d4edd;
+    --text-main: #d1d9e6;
+    --text-muted: #8b9bb4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  body {
+    background: radial-gradient(circle at center, #111a28 0%, var(--bg-dark) 100%);
+    color: var(--text-main);
+    font-family: 'Rajdhani', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── SLIDE DECK ── */
+  .slide {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    opacity: 0; visibility: hidden;
+    z-index: 10; padding: 25px 45px 20px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .slide.on { opacity: 1; visibility: visible; z-index: 15; }
+
+  /* Corner Brackets */
+  .cr { position: absolute; width: 30px; height: 30px; pointer-events: none; }
+  .cr-tl { top: 20px; left: 20px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+  .cr-tr { top: 20px; right: 20px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+  .cr-bl { bottom: 20px; left: 20px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+  .cr-br { bottom: 20px; right: 20px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+
+  /* Footer */
+  .sfoot {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; font-weight: 600; color: var(--text-muted);
+    letter-spacing: 2px; text-transform: uppercase;
+    padding-top: 10px; margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.05);
+  }
+  .sfoot .center { color: var(--cyan); font-weight: 700; }
+
+  /* ══════════════════════════════════════════════════════
+     PAGE 1
+     ══════════════════════════════════════════════════════ */
+  .p1-layout {
+    display: grid; grid-template-columns: 1.15fr 1fr; gap: 40px; flex: 1; min-height: 0;
+  }
+  
+  /* LEFT COL */
+  .p1-left { display: flex; flex-direction: column; gap: 20px; }
+  
+  .hero-pre { font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--yellow); letter-spacing: 3px; display: flex; align-items: center; gap: 10px; margin-bottom: 0px; }
+  .hero-pre::before, .hero-pre::after { content: ''; width: 30px; height: 1px; background: var(--yellow); }
+  
+  .hero-title {
+    font-family: 'Teko', sans-serif; font-size: 110px; font-weight: 600; line-height: 0.85; letter-spacing: 2px;
+    background: linear-gradient(180deg, #ffffff 0%, #4facfe 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 10px;
+  }
+  
+  .hero-sub { font-family: 'Share Tech Mono', monospace; font-size: 12px; color: var(--cyan); letter-spacing: 5px; margin-bottom: 20px; }
+  
+  .hero-desc { font-size: 17px; line-height: 1.5; color: var(--text-main); font-weight: 500; }
+  .hero-desc strong { color: var(--cyan); font-weight: 700; }
+
+  .steps-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; flex: 1; }
+  .step-card {
+    background: var(--card-bg); border-radius: 8px; padding: 14px 20px;
+    display: flex; gap: 18px; align-items: center;
+    border: 1px solid rgba(255,255,255,0.03);
+  }
+  .step-num { font-family: 'Teko', sans-serif; font-size: 42px; font-weight: 600; line-height: 0.8; }
+  .step-card:nth-child(1) .step-num { color: var(--cyan); }
+  .step-card:nth-child(2) .step-num { color: var(--pink); }
+  .step-card:nth-child(3) .step-num { color: var(--green); }
+  .step-card:nth-child(4) .step-num { color: var(--yellow); }
+  .step-text h4 { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 2px; }
+  .step-text p { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
+
+  /* RIGHT COL */
+  .p1-right { display: flex; flex-direction: column; gap: 16px; }
+  
+  .top-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .top-stat {
+    border-radius: 8px; padding: 12px 10px; text-align: center;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .top-stat.s1 { background: linear-gradient(135deg, #1c5f87 0%, #154563 100%); }
+  .top-stat.s2 { background: linear-gradient(135deg, #374168 0%, #293151 100%); }
+  .top-stat.s3 { background: linear-gradient(135deg, #23545b 0%, #183e44 100%); }
+  .top-stat.s4 { background: linear-gradient(135deg, #2d3b6e 0%, #212c54 100%); }
+  
+  .ts-val { font-family: 'Teko', sans-serif; font-size: 38px; font-weight: 600; line-height: 1; margin-bottom: 2px; }
+  .top-stat.s1 .ts-val { color: var(--cyan); }
+  .top-stat.s2 .ts-val { color: var(--pink); }
+  .top-stat.s3 .ts-val { color: var(--green); }
+  .top-stat.s4 .ts-val { color: var(--yellow); }
+  .ts-lbl { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.7); }
+
+  .radar-card {
+    background: var(--card-bg); border-radius: 8px; border: 1px solid rgba(255,255,255,0.03);
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 15px;
+  }
+  .radar-title { font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--yellow); letter-spacing: 2px; margin-bottom: 15px; display: flex; align-items: center; gap: 6px; }
+  .radar-title::before { content: '▸'; }
+  .radar-grid { display: grid; grid-template-columns: repeat(5, 30px); gap: 4px; margin-bottom: 15px; }
+  .rg-cell { width: 30px; height: 30px; background: rgba(30, 45, 75, 0.4); border-radius: 3px; border: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; font-size: 16px; color: rgba(255,255,255,0.2); }
+  .rg-cell.cyan { background: rgba(0, 229, 255, 0.25); border-color: var(--cyan); }
+  .rg-cell.pink { background: rgba(255, 42, 122, 0.45); border-color: var(--pink); }
+  .radar-cap { font-size: 11px; color: var(--text-muted); }
+
+  .tech-card {
+    background: var(--card-bg); border-radius: 8px; border: 1px solid rgba(255,255,255,0.03);
+    padding: 15px 20px;
+  }
+  .tc-title { font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--text-main); letter-spacing: 2px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .tc-title::before { content: '▸'; }
+  .tc-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tc-pill { font-size: 12px; font-weight: 600; color: var(--cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.2); padding: 4px 12px; border-radius: 20px; }
+
+  /* ══════════════════════════════════════════════════════
+     PAGE 2
+     ══════════════════════════════════════════════════════ */
+  .p2-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; }
+  .p2-title { font-family: 'Teko', sans-serif; font-size: 55px; font-weight: 600; line-height: 0.9; color: #fff; text-transform: uppercase; text-shadow: 2px 2px 0px rgba(255, 204, 0, 0.3); }
+  .p2-title span { color: var(--yellow); text-shadow: none; }
+  .p2-sub { font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--cyan); letter-spacing: 2px; text-transform: uppercase; }
+
+  .p2-stats-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 20px; }
+  .p2-stat { padding: 12px 10px; border-radius: 8px; text-align: center; }
+  .p2-stat.c1 { background: linear-gradient(135deg, #00d2ff, #3a7bd5); }
+  .p2-stat.c2 { background: linear-gradient(135deg, #ff416c, #ff4b2b); }
+  .p2-stat.c3 { background: linear-gradient(135deg, #fceabb, #f8b500); }
+  .p2-stat.c4 { background: linear-gradient(135deg, #11998e, #38ef7d); }
+  .p2-stat.c5 { background: linear-gradient(135deg, #a8c0ff, #3f2b96); }
+  .p2-stat .v { font-family: 'Teko', sans-serif; font-size: 38px; font-weight: 600; line-height: 1; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+  .p2-stat .l { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.9); margin-top: 2px; }
+  .p2-stat .s { font-size: 9px; color: rgba(255,255,255,0.6); margin-top: 2px; }
+
+  .reasons-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; flex: 1; margin-bottom: 20px; }
+  .rc { background: var(--card-bg); border-radius: 8px; padding: 20px; border: 1px solid rgba(255,255,255,0.03); display: flex; flex-direction: column; gap: 10px; }
+  .rc-dash { width: 25px; height: 3px; border-radius: 2px; }
+  .rc:nth-child(1) .rc-dash { background: var(--cyan); }
+  .rc:nth-child(2) .rc-dash { background: var(--pink); }
+  .rc:nth-child(3) .rc-dash { background: var(--yellow); }
+  .rc:nth-child(4) .rc-dash { background: var(--green); }
+  .rc:nth-child(5) .rc-dash { background: var(--cyan); }
+  .rc:nth-child(6) .rc-dash { background: var(--purple); }
+  
+  .rc-icon { font-size: 20px; margin-bottom: 5px; }
+  .rc h4 { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 5px; }
+  .rc p { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+
+  .cta-banner {
+    background: linear-gradient(90deg, #3a7bd5 0%, #ff416c 50%, #f8b500 100%);
+    border-radius: 8px; padding: 25px 30px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .cta-banner h3 { font-family: 'Teko', sans-serif; font-size: 32px; font-weight: 600; color: #fff; line-height: 1; letter-spacing: 1px; }
+  .cta-banner p { font-size: 13px; color: rgba(255,255,255,0.9); margin-top: 5px; }
+  
+  .cta-meta { display: flex; gap: 30px; text-align: left; }
+  .cm-col .l { font-size: 10px; color: rgba(255,255,255,0.7); letter-spacing: 1px; margin-bottom: 2px; }
+  .cm-col .v { font-size: 15px; font-weight: 700; color: #fff; }
+
+  /* ══════════════════════════════════════════════════════
+     PRINT CSS
+     ══════════════════════════════════════════════════════ */
+  @media print {
+    html, body { width: 297mm !important; height: 420mm !important; margin: 0 !important; padding: 0 !important; background: var(--bg-dark) !important; overflow: visible !important; }
+    .slide { width: 297mm !important; height: 210mm !important; position: relative !important; top: 0 !important; opacity: 1 !important; visibility: visible !important; margin: 0 !important; padding: 12mm 18mm !important; box-sizing: border-box !important; page-break-after: always !important; display: flex !important; flex-direction: column !important; }
+    .slide:last-child { page-break-after: avoid !important; }
+    .nav, .dots, button { display: none !important; }
+  }
+
+  /* Nav for screen */
+  .nav { position: fixed; bottom: 20px; right: 20px; z-index: 100; display: flex; gap: 10px; }
+  .nav button { background: var(--cyan); color: #000; border: none; padding: 8px 16px; font-family: 'Rajdhani'; font-weight: 700; border-radius: 4px; cursor: pointer; }
+  .nav button:hover { opacity: 0.8; }
+</style>
+</head>
+<body>
+
+<!-- Navigation Buttons (Hidden on Print) -->
+<div class="nav">
+  <button onclick="document.getElementById('s1').classList.add('on'); document.getElementById('s2').classList.remove('on');">PAGE 1</button>
+  <button onclick="document.getElementById('s2').classList.add('on'); document.getElementById('s1').classList.remove('on');">PAGE 2</button>
+  <button onclick="window.print()" style="background: var(--yellow);">EXPORT PDF</button>
+</div>
+
+<!-- PAGE 1 -->
+<div class="slide on" id="s1">
+  <div class="cr cr-tl"></div><div class="cr cr-tr"></div>
+  <div class="cr cr-bl"></div><div class="cr cr-br"></div>
+
+  <div class="p1-layout">
+    <!-- LEFT -->
+    <div class="p1-left">
+      <div class="hero">
+        <div class="hero-pre">MERAZ 2026 &middot; FLAGSHIP EVENT</div>
+        <div class="hero-title">BATTLESHIP</div>
+        <div class="hero-sub">MERAZ — ANNUAL TECH FEST &middot; IIT BHILAI</div>
+        <div class="hero-desc">
+          A <strong>live multiplayer naval combat tournament</strong> played on <strong>custom-built wireless hardware consoles</strong> — not on laptops or phones. Four teams battle simultaneously to destroy each other's hidden fleets while the entire audience watches the war unfold in real-time on a projected dashboard.
+        </div>
+      </div>
+      
+      <div class="steps-list">
+        <div class="step-card">
+          <div class="step-num">01</div>
+          <div class="step-text">
+            <h4>Deploy Your Fleet</h4>
+            <p>Each team secretly places ships on their grid via a handheld touch console we engineered from scratch.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-num">02</div>
+          <div class="step-text">
+            <h4>Attack Any Rival</h4>
+            <p>On your turn, pick any of the 3 enemy teams and fire a torpedo. Hits and misses appear instantly on all screens.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-num">03</div>
+          <div class="step-text">
+            <h4>Strategize & Deceive</h4>
+            <p>Form temporary alliances, bait enemies into wasting shots, read body language. Pure psychological warfare.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-num">04</div>
+          <div class="step-text">
+            <h4>Last Fleet Standing Wins</h4>
+            <p>Lose all ships = eliminated. Finals happen live on main stage in front of the entire fest audience.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="p1-right">
+      <div class="top-stats-grid">
+        <div class="top-stat s1">
+          <div class="ts-val">4</div>
+          <div class="ts-lbl">Teams per Match</div>
+        </div>
+        <div class="top-stat s2">
+          <div class="ts-val">2-4</div>
+          <div class="ts-lbl">Players per Team</div>
+        </div>
+        <div class="top-stat s3">
+          <div class="ts-val">~15M</div>
+          <div class="ts-lbl">Per Round</div>
+        </div>
+        <div class="top-stat s4">
+          <div class="ts-val">ZERO</div>
+          <div class="ts-lbl">Coding Required</div>
+        </div>
+      </div>
+
+      <div class="radar-card">
+        <div class="radar-title">LIVE TACTICAL GRID</div>
+        <div class="radar-grid">
+          <div class="rg-cell"></div><div class="rg-cell cyan"></div><div class="rg-cell pink"></div><div class="rg-cell"></div><div class="rg-cell"></div>
+          <div class="rg-cell"></div><div class="rg-cell"></div><div class="rg-cell"></div><div class="rg-cell">·</div><div class="rg-cell"></div>
+          <div class="rg-cell pink"></div><div class="rg-cell"></div><div class="rg-cell"></div><div class="rg-cell"></div><div class="rg-cell">·</div>
+          <div class="rg-cell cyan"></div><div class="rg-cell"></div><div class="rg-cell"></div><div class="rg-cell">·</div><div class="rg-cell"></div>
+          <div class="rg-cell cyan"></div><div class="rg-cell cyan"></div><div class="rg-cell pink"></div><div class="rg-cell"></div><div class="rg-cell">·</div>
+          <div class="rg-cell cyan"></div><div class="rg-cell cyan"></div><div class="rg-cell pink"></div><div class="rg-cell"></div><div class="rg-cell">·</div>
+          <div class="rg-cell"></div><div class="rg-cell cyan"></div><div class="rg-cell pink"></div><div class="rg-cell cyan"></div><div class="rg-cell"></div>
+        </div>
+        <div class="radar-cap">Real-time projected view — audience sees all 4 grids</div>
+      </div>
+
+      <div class="tech-card">
+        <div class="tc-title">BUILT IN-HOUSE BY ELECTROMOS</div>
+        <div class="tc-pills">
+          <div class="tc-pill">ESP32 MCU</div>
+          <div class="tc-pill">ESP-NOW Mesh</div>
+          <div class="tc-pill">ILI9341 Touch</div>
+          <div class="tc-pill">Python Dashboard</div>
+          <div class="tc-pill">Custom PCBs</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sfoot">
+    <div>CONFIDENTIAL &middot; SPONSORSHIP PROPOSAL</div>
+    <div class="center">ELECTROMOS — THE ELECTRONICS CLUB OF IIT BHILAI</div>
+    <div>PAGE 1 / 2</div>
+  </div>
+</div>
+
+
+<!-- PAGE 2 -->
+<div class="slide" id="s2">
+  <div class="cr cr-tl"></div><div class="cr cr-tr"></div>
+  <div class="cr cr-bl"></div><div class="cr cr-br"></div>
+
+  <div class="p2-header">
+    <div class="p2-title">WHY SPONSOR <span>BATTLESHIP</span></div>
+    <div class="p2-sub">MERAZ 2026 &middot; PARTNERSHIP PROPOSAL</div>
+  </div>
+
+  <div class="p2-stats-strip">
+    <div class="p2-stat c1"><div class="v">5,000+</div><div class="l">Fest Footfall</div><div class="s">Meraz 2025</div></div>
+    <div class="p2-stat c2"><div class="v">50+</div><div class="l">Colleges Reached</div><div class="s">Meraz 2025</div></div>
+    <div class="p2-stat c3"><div class="v">40+</div><div class="l">Events Hosted</div><div class="s">Meraz 2025</div></div>
+    <div class="p2-stat c4"><div class="v">25+</div><div class="l">Past Sponsors</div><div class="s">Meraz 2025</div></div>
+    <div class="p2-stat c5"><div class="v">3 DAYS</div><div class="l">Non-Stop Exposure</div><div class="s">Oct 2026</div></div>
+  </div>
+
+  <div class="reasons-grid">
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">📺</div>
+      <h4>Main Screen Branding</h4>
+      <p>Your logo on the live spectator dashboard projected on the auditorium screen — visible to hundreds throughout every match.</p>
+    </div>
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">🎮</div>
+      <h4>Logo on Hardware</h4>
+      <p>Your brand physically on game consoles every participant holds. Tangible branding — not just another digital banner.</p>
+    </div>
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">📱</div>
+      <h4>Viral Content</h4>
+      <p>Teams yelling, displays glowing, crowds cheering — content that goes viral on Reels and Shorts. Your brand in every frame.</p>
+    </div>
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">🎯</div>
+      <h4>Premium IIT Audience</h4>
+      <p>Direct access to engineering students, researchers, and delegates from 50+ colleges — high-value demographic.</p>
+    </div>
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">⚡</div>
+      <h4>First-of-its-Kind</h4>
+      <p>No other college fest has a hardware-based multiplayer game. Sponsoring something genuinely new builds innovation equity.</p>
+    </div>
+    <div class="rc">
+      <div class="rc-dash"></div>
+      <div class="rc-icon">🏆</div>
+      <h4>Multi-Day Visibility</h4>
+      <p>Tournament rounds run all 3 days — from qualifiers to the main stage final. Continuous branding from start to trophy.</p>
+    </div>
+  </div>
+
+  <div class="cta-banner">
+    <div>
+      <h3>LET'S BUILD THIS ARENA TOGETHER</h3>
+      <p>Flexible packages — branding, prizes, hardware, media. Let's talk.</p>
+    </div>
+    <div class="cta-meta">
+      <div class="cm-col"><div class="l">ORGANIZED BY</div><div class="v">ELECTROMOS</div></div>
+      <div class="cm-col"><div class="l">INSTITUTION</div><div class="v">IIT BHILAI</div></div>
+      <div class="cm-col"><div class="l">FEST</div><div class="v">MERAZ OCT '26</div></div>
+    </div>
+  </div>
+
+  <div class="sfoot">
+    <div>@electromos_iitbhilai</div>
+    <div class="center">ELECTROMOS — THE ELECTRONICS CLUB OF IIT BHILAI</div>
+    <div>PAGE 2 / 2</div>
+  </div>
+</div>
+
+</body>
+</html>

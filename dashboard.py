@@ -276,10 +276,15 @@ def api_state():
 
 @app.route("/api/command", methods=["POST"])
 def api_command():
+    # 1. Parse the JSON payload sent by the frontend button click
     data = request.get_json(silent=True) or {}
     cmd = str(data.get("cmd", "")).upper()
+    
+    # 2. Validate that it's a known command to prevent garbage being sent over USB
     if cmd not in ("START", "FORCE_START", "RESET", "SKIP_TURN", "GET_STATE"):
         return jsonify({"ok": False, "error": "unknown command"}), 400
+        
+    # 3. Forward the valid command over the USB Serial cable to the Central Node
     send_command(cmd)
     return jsonify({"ok": True})
 

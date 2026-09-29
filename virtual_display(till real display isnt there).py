@@ -549,7 +549,7 @@ class VirtualTFTDisplay(tk.Tk):
         px = event.x / SCALE
         py = event.y / SCALE
 
-        # 1. Target buttons
+        # 1. Check if the user clicked one of the Target Team buttons (T2, T3, T4)
         for i in range(3):
             bx = 5 + i * (UI_TARGET_BTN_W + UI_TARGET_GAP)
             by = UI_TARGET_BTN_Y
@@ -558,18 +558,20 @@ class VirtualTFTDisplay(tk.Tk):
                 self.redraw()
                 return
 
-        # 2. Grid cells
+        # 2. Check if the user clicked inside the 5x5 Grid cells
         if UI_GRID_X <= px < UI_GRID_X + GRID_SIZE * UI_CELL_SIZE and UI_GRID_Y <= py < UI_GRID_Y + GRID_SIZE * UI_CELL_SIZE:
             self.sel_x = int((px - UI_GRID_X) // UI_CELL_SIZE)
             self.sel_y = int((py - UI_GRID_Y) // UI_CELL_SIZE)
             self.redraw()
             return
 
-        # 3. ATTACK button
+        # 3. Check if the user clicked the big red ATTACK button
         if UI_ATTACK_BTN_X <= px <= UI_ATTACK_BTN_X + UI_ATTACK_BTN_W and UI_ATTACK_BTN_Y <= py <= UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H:
+            # Only fire if they selected both a target and a coordinate
             if self.sel_target != 0 and self.sel_x >= 0 and self.sel_y >= 0 and not self.attack_in_flight:
                 self.attack_in_flight = True
                 self.redraw()
+                
                 # Transmit over Serial to participant ESP32
                 cmd = f"{self.sel_target} {self.sel_x} {self.sel_y}"
                 self.send_serial_line(cmd)

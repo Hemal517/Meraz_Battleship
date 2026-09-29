@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>///CLASSIFIED_TRANSMISSION</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@500;700;900&display=swap');
+
+  :root {
+    --g: #00ff41;
+    --g2: #39ff14;
+    --amber: #ffb000;
+    --red: #ff2525;
+    --cyan: #00f0ff;
+    --pink: #ff2d78;
+    --purple: #b44dff;
+    --bg: #03060a;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--g);font-family:'Share Tech Mono',monospace;height:100vh;overflow:hidden;cursor:none}
+
+  /* CRT Scanlines and Vignette */
+  body::before{
+    content:'';position:fixed;inset:0;z-index:200;pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,0.18) 0px,rgba(0,0,0,0.18) 1px,transparent 1px,transparent 2px);
+  }
+  body::after{
+    content:'';position:fixed;inset:0;z-index:199;pointer-events:none;
+    background:radial-gradient(ellipse at center,transparent 45%,rgba(0,0,0,0.85) 100%);
+  }
+
+  /* Dynamic background canvas */
+  #bg-canvas{position:fixed;inset:0;z-index:2;pointer-events:none}
+
+  /* Canvas overlays */
+  #static{position:fixed;inset:0;z-index:150;pointer-events:none;opacity:0;transition:opacity 0.05s}
+  #static.on{opacity:0.18}
+  #static.heavy{opacity:0.55}
+
+  .whiteout{
+    position:fixed;inset:0;z-index:140;background:#fff;pointer-events:none;
+    opacity:0;transition:opacity 0.05s;
+  }
+  .whiteout.flash{opacity:0.75}
+
+  /* Screen shake */
+  .shake{animation:shakeAnim 0.38s ease}
+  @keyframes shakeAnim{
+    0%{transform:translate(0,0)}
+    20%{transform:translate(-10px,6px) rotate(-0.5deg)}
+    40%{transform:translate(8px,-8px) rotate(0.5deg)}
+    60%{transform:translate(-6px,3px) rotate(-0.2deg)}
+    80%{transform:translate(4px,-2px) rotate(0.2deg)}
+    100%{transform:translate(0,0)}
+  }
+
+  /* Main terminal frame - Translucent open-frame HUD */
+  .term{
+    position:fixed;inset:20px;z-index:10;
+    border:1px solid rgba(0,240,255,0.4);
+    box-shadow:inset 0 0 50px rgba(0,240,255,0.06), 0 0 35px rgba(0,240,255,0.18);
+    display:flex;flex-direction:column;
+    padding:14px 20px;
+    background:rgba(1,5,10,0.38);
+    overflow:hidden;
+  }
+  .term::before{
+    content:'';position:absolute;top:0;left:0;width:22px;height:22px;
+    border-top:3px solid var(--cyan);border-left:3px solid var(--cyan);pointer-events:none;z-index:12;
+  }
+  .term::after{
+    content:'';position:absolute;bottom:0;right:0;width:22px;height:22px;
+    border-bottom:3px solid var(--cyan);border-right:3px solid var(--cyan);pointer-events:none;z-index:12;
+  }
+  .term-header{
+    display:flex;justify-content:space-between;align-items:center;
+    border-bottom:1px solid rgba(0,240,255,0.25);
+    padding-bottom:8px;margin-bottom:8px;
+    font-size:11px;letter-spacing:2px;color:rgba(0,240,255,0.7);
+    flex-shrink:0;background:rgba(0,20,35,0.3);padding:6px 12px;
+  }
+  .term-header .live-badge{
+    color:var(--red);animation:pulseRed 1s infinite;display:flex;align-items:center;gap:6px;font-weight:700;
+  }
+  .term-header .live-dot{width:8px;height:8px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red)}
+  @keyframes pulseRed{0%,100%{opacity:1}50%{opacity:0.3}}
+
+  /* Layout with Sidebars */
+  .term-main-layout{
+    flex:1;display:flex;position:relative;overflow:hidden;gap:16px;
+  }
+  .hud-sidebar{
+    width:clamp(130px,14vw,190px);display:flex;flex-direction:column;
+    justify-content:space-between;font-size:10px;letter-spacing:1.5px;
+    color:rgba(0,240,255,0.7);border:1px solid rgba(0,240,255,0.2);
+    background:rgba(0,15,30,0.45);padding:10px;
+    box-shadow:inset 0 0 15px rgba(0,240,255,0.06);
+    pointer-events:none;flex-shrink:0;
+  }
+  @media(max-width:768px){.hud-sidebar{display:none}}
+  .hud-sidebar-title{
+    color:var(--amber);font-weight:700;border-bottom:1px dashed rgba(255,176,0,0.35);
+    padding-bottom:4px;margin-bottom:6px;font-size:10px;letter-spacing:2px;
+  }
+  .hud-stream{
+    font-family:'Share Tech Mono',monospace;font-size:9px;line-height:1.5;
+    color:rgba(0,255,65,0.6);height:120px;overflow:hidden;
+  }
+  .hud-bars{display:flex;flex-direction:column;gap:5px;margin:6px 0}
+  .hud-bar-row{display:flex;justify-content:space-between;align-items:center;font-size:9px}
+  .hud-meter{
+    width:55px;height:5px;background:rgba(0,240,255,0.15);border-radius:1px;overflow:hidden;
+  }
+  .hud-meter-fill{height:100%;background:var(--cyan);box-shadow:0 0 6px var(--cyan)}
+  .hud-reticle{
+    width:64px;height:64px;border:1px dashed rgba(0,240,255,0.45);border-radius:50%;
+    margin:6px auto;position:relative;animation:rotReticle 9s linear infinite;
+  }
+  .hud-reticle::after{
+    content:'';position:absolute;inset:10px;border:1px solid rgba(57,255,20,0.45);border-radius:50%;
+  }
+  @keyframes rotReticle{to{transform:rotate(360deg)}}
+
+  /* Terminal footer */
+  .term-footer{
+    display:flex;justify-content:space-between;align-items:center;
+    border-top:1px solid rgba(0,240,255,0.2);padding:6px 12px;margin-top:8px;
+    font-size:10px;letter-spacing:2px;color:rgba(0,240,255,0.6);
+    flex-shrink:0;background:rgba(0,20,35,0.25);
+  }
+  .hud-oscillo{display:flex;align-items:center;gap:8px}
+  .hud-oscillo-canvas{width:110px;height:18px}
+
+  .term-body{flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+
+  /* Scenes */
+  .scene{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    opacity:0;transition:opacity 0.35s ease, transform 0.35s ease;
+    transform:scale(0.96);
+    pointer-events:none;
+  }
+  .scene.active{opacity:1;transform:scale(1)}
+
+  /* S0: SIGNAL DETECTED */
+  .s0-warn{
+    font-size:clamp(12px,2vw,16px);letter-spacing:5px;color:var(--red);
+    animation:warnFlash 0.5s step-end infinite;
+  }
+  @keyframes warnFlash{0%,100%{opacity:1}50%{opacity:0}}
+  .s0-main{
+    font-family:'Orbitron',sans-serif;font-size:clamp(30px,6vw,68px);
+    font-weight:900;letter-spacing:6px;margin:18px 0;text-align:center;
+    color:#fff;text-shadow:0 0 25px var(--g),0 0 70px rgba(0,255,65,0.3);
+  }
+  .s0-freq{font-size:clamp(11px,1.4vw,15px);color:rgba(0,255,65,0.5);letter-spacing:3px;text-align:center}
+
+  /* S1: COORDINATES */
+  .s1-label{font-size:12px;letter-spacing:4px;color:var(--amber);margin-bottom:18px}
+  .s1-coords{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(22px,4.5vw,52px);font-weight:900;letter-spacing:4px;color:var(--cyan);
+    text-shadow:0 0 20px var(--cyan);text-align:center;
+  }
+  .s1-sub{
+    font-size:clamp(11px,1.5vw,16px);color:rgba(0,255,65,0.6);margin-top:16px;
+    letter-spacing:3px;text-align:center;
+  }
+
+  /* S2: DECRYPTING */
+  .s2-label{font-size:clamp(13px,2vw,18px);letter-spacing:5px;color:var(--amber);margin-bottom:18px}
+  .s2-bar-track{
+    width:clamp(260px,55vw,560px);height:6px;background:rgba(0,255,65,0.12);
+    border:1px solid rgba(0,255,65,0.25);border-radius:3px;overflow:hidden;
+  }
+  .s2-bar-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--g),var(--cyan));box-shadow:0 0 15px var(--g)}
+  .s2-pct{font-family:'Orbitron',sans-serif;font-size:18px;margin-top:12px;letter-spacing:3px;color:var(--g)}
+  .s2-hex{
+    font-size:10px;color:rgba(0,255,65,0.28);max-width:540px;
+    word-break:break-all;margin-top:20px;line-height:1.6;max-height:64px;overflow:hidden;
+  }
+
+  /* S3: FRAGMENTS */
+  .s3-frag{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(28px,6vw,72px);font-weight:900;
+    letter-spacing:5px;line-height:1.5;text-align:center;
+  }
+  .s3-frag .redacted{
+    color:var(--red);text-decoration:line-through;text-decoration-color:rgba(255,37,37,0.5);opacity:0.65;
+  }
+  .s3-frag .clear{color:var(--g);text-shadow:0 0 25px var(--g)}
+
+  /* S4: 4 UNITS */
+  .s4-label{font-size:13px;letter-spacing:5px;color:var(--red);margin-bottom:22px}
+  .s4-grid{display:flex;gap:clamp(16px,4vw,50px)}
+  .s4-blip{
+    width:clamp(45px,9vw,90px);height:clamp(45px,9vw,90px);
+    border:2px solid;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:'Orbitron',sans-serif;font-size:clamp(20px,3.5vw,36px);font-weight:900;
+    position:relative;background:rgba(0,0,0,0.5);
+  }
+  .s4-blip::before{
+    content:'';position:absolute;inset:-8px;border-radius:50%;
+    border:1px solid;opacity:0.3;animation:ripple 1.4s ease-out infinite;
+  }
+  .s4-blip::after{
+    content:'';position:absolute;inset:-18px;border-radius:50%;
+    border:1px solid;opacity:0.15;animation:ripple 1.4s ease-out 0.3s infinite;
+  }
+  @keyframes ripple{0%{transform:scale(0.9);opacity:0.4}100%{transform:scale(1.5);opacity:0}}
+  .s4-blip:nth-child(1){color:var(--cyan);border-color:var(--cyan)}
+  .s4-blip:nth-child(1)::before,.s4-blip:nth-child(1)::after{border-color:var(--cyan)}
+  .s4-blip:nth-child(2){color:var(--pink);border-color:var(--pink)}
+  .s4-blip:nth-child(2)::before,.s4-blip:nth-child(2)::after{border-color:var(--pink)}
+  .s4-blip:nth-child(3){color:var(--purple);border-color:var(--purple)}
+  .s4-blip:nth-child(3)::before,.s4-blip:nth-child(3)::after{border-color:var(--purple)}
+  .s4-blip:nth-child(4){color:var(--g2);border-color:var(--g2)}
+  .s4-blip:nth-child(4)::before,.s4-blip:nth-child(4)::after{border-color:var(--g2)}
+  .s4-count{
+    font-family:'Orbitron',sans-serif;font-size:clamp(13px,2.2vw,22px);
+    letter-spacing:3px;color:rgba(0,255,65,0.6);margin-top:24px;text-align:center;
+  }
+
+  /* ═══ TACTICAL BATTLE GRID (HUD STRIKE SCENE) ═══ */
+  .grid-wrap{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    width:100%;height:100%;position:relative;perspective:900px;
+  }
+  .grid-hud-label{
+    font-size:clamp(11px,1.6vw,14px);letter-spacing:4px;color:var(--cyan);
+    margin-bottom:12px;display:flex;align-items:center;gap:10px;
+  }
+  .grid-hud-radar{
+    position:absolute;width:min(60vw,380px);height:min(60vw,380px);border-radius:50%;
+    border:1px dashed rgba(0,240,255,0.18);pointer-events:none;
+  }
+  .grid-hud-sweep{
+    position:absolute;top:50%;left:50%;width:50%;height:2px;
+    transform-origin:left center;
+    background:linear-gradient(90deg,rgba(0,240,255,0.8),transparent);
+    animation:radarSweep 2.5s linear infinite;filter:drop-shadow(0 0 10px var(--cyan));
+  }
+  @keyframes radarSweep{to{transform:rotate(360deg)}}
+
+  .battle-grid{
+    display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);
+    gap:3px;width:min(65vw,360px);height:min(65vw,360px);
+    transform:rotateX(32deg) rotateZ(-4deg);transform-style:preserve-3d;
+    box-shadow:0 15px 40px rgba(0,0,0,0.8), 0 0 30px rgba(0,240,255,0.12);
+  }
+  .grid-cell{
+    background:rgba(0,40,70,0.4);border:1px solid rgba(0,240,255,0.15);
+    border-radius:2px;position:relative;transition:all 0.25s;
+  }
+  .grid-cell.water-hit{
+    background:rgba(0,90,160,0.25);border-color:rgba(0,240,255,0.2);
+  }
+  .grid-cell.water-hit::after{
+    content:'';position:absolute;inset:32%;border-radius:50%;
+    background:rgba(0,240,255,0.6);box-shadow:0 0 8px var(--cyan);
+  }
+  .grid-cell.ship-hit{
+    background:rgba(255,37,37,0.55)!important;border-color:rgba(255,37,37,0.8)!important;
+    box-shadow:0 0 18px rgba(255,37,37,0.7), inset 0 0 12px rgba(255,100,0,0.6);
+    animation:cellHitAnim 0.6s ease;
+  }
+  .grid-cell.ship-hit::after{
+    content:'✕';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:#fff;font-size:clamp(12px,2vw,18px);font-weight:900;text-shadow:0 0 10px #ff0000;
+  }
+  @keyframes cellHitAnim{
+    0%{transform:scale(1.5);filter:brightness(3)}
+    50%{transform:scale(0.85)}
+    100%{transform:scale(1);filter:brightness(1)}
+  }
+
+  .explosion{
+    position:fixed;z-index:60;width:180px;height:180px;border-radius:50%;
+    pointer-events:none;animation:explodeAnim 0.55s ease-out forwards;
+  }
+  @keyframes explodeAnim{
+    0%{transform:scale(0);opacity:1;background:radial-gradient(circle,#fff,#ff8c00,#ff2525,transparent)}
+    40%{transform:scale(1.4);opacity:0.85}
+    100%{transform:scale(2.6);opacity:0}
+  }
+
+  /* S5: BRIEFING DOC */
+  .s5-doc{
+    border:1px solid rgba(0,255,65,0.25);padding:24px 34px;max-width:580px;width:95%;
+    position:relative;background:rgba(0,10,16,0.65);
+    box-shadow:0 0 30px rgba(0,255,65,0.06);
+  }
+  .s5-doc::before{
+    content:'CLASSIFIED';position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-50%) rotate(-22deg);
+    font-family:'Orbitron',sans-serif;font-size:clamp(38px,7vw,76px);font-weight:900;
+    color:rgba(255,37,37,0.1);letter-spacing:10px;pointer-events:none;white-space:nowrap;
+  }
+  .s5-line{margin:9px 0;font-size:clamp(12px,1.6vw,16px);letter-spacing:1px;line-height:1.7}
+  .s5-line .lbl{color:var(--amber);margin-right:8px;font-weight:700}
+  .s5-line .redact-cipher{
+    background:#081014;color:var(--red);
+    padding:2px 8px;border:1px solid rgba(255,37,37,0.4);
+    font-family:'Share Tech Mono',monospace;font-weight:700;letter-spacing:2px;
+    animation:cipherGlow 0.4s infinite alternate;
+  }
+  @keyframes cipherGlow{
+    0%{box-shadow:0 0 6px rgba(255,37,37,0.3);color:var(--red)}
+    100%{box-shadow:0 0 16px rgba(255,37,37,0.7);color:#fff}
+  }
+  .s5-line .dim{color:rgba(0,255,65,0.45)}
+  .s5-stamp{
+    position:absolute;bottom:14px;right:20px;
+    font-size:10px;letter-spacing:3px;color:var(--red);
+    border:1px solid var(--red);padding:3px 9px;transform:rotate(-4deg);
+  }
+
+  /* ═══ S6: GLITCHED CIPHER TITLE (NAME CONCEALED) ═══ */
+  .s6-op{text-align:center;display:flex;flex-direction:column;align-items:center}
+  .s6-pre{
+    font-family:'Orbitron',sans-serif;font-size:clamp(13px,2.2vw,22px);
+    letter-spacing:8px;color:var(--amber);margin-bottom:12px;font-weight:700;
+  }
+  .s6-name-box{
+    position:relative;display:inline-block;padding:10px 24px;
+    border:2px solid rgba(255,37,37,0.6);
+    background:rgba(255,37,37,0.06);
+    box-shadow:0 0 40px rgba(255,37,37,0.3);
+  }
+  .s6-name{
+    font-family:'Share Tech Mono','Orbitron',monospace;
+    font-size:clamp(38px,9.5vw,115px);letter-spacing:6px;font-weight:900;
+    color:#fff;
+    text-shadow:0 0 30px var(--red), 0 0 60px rgba(255,37,37,0.5);
+    line-height:1.1;
+  }
+  .s6-name.revealed-title{
+    color:#00f0ff!important;
+    text-shadow:0 0 35px #00f0ff, 0 0 75px rgba(0,240,255,0.7), 0 0 120px rgba(255,255,255,0.85)!important;
+    font-family:'Orbitron',sans-serif!important;
+    letter-spacing:10px!important;
+    animation:snapReveal 0.25s ease-out;
+  }
+  @keyframes snapReveal{
+    0%{transform:scale(1.22);filter:brightness(3.5)}
+    100%{transform:scale(1);filter:brightness(1)}
+  }
+  .s6-tag{
+    font-size:clamp(11px,1.5vw,16px);letter-spacing:10px;color:var(--red);
+    margin-top:16px;font-weight:700;animation:warnFlash 0.3s step-end infinite;
+  }
+  .s6-sub{
+    font-size:clamp(10px,1.3vw,14px);letter-spacing:6px;color:rgba(0,255,65,0.35);margin-top:14px;
+  }
+
+  /* ═══ S7: GRAND FINALE (BOLD IMPACT FONTS) ═══ */
+  .s7-final{
+    text-align:center;display:flex;flex-direction:column;align-items:center;
+    width:100%;max-width:850px;padding:20px;
+  }
+  .s7-origin{
+    font-family:'Share Tech Mono',monospace;
+    font-size:clamp(12px,1.8vw,18px);letter-spacing:6px;color:var(--amber);
+    margin-bottom:12px;font-weight:700;
+  }
+  .s7-name{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(38px,7.5vw,94px);font-weight:900;letter-spacing:10px;
+    background:linear-gradient(135deg,#00f0ff,#39ff14,#00f0ff);
+    background-size:200% auto;
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+    filter:drop-shadow(0 0 35px rgba(0,240,255,0.6)) drop-shadow(0 0 70px rgba(57,255,20,0.3));
+    line-height:1.1;
+  }
+  .s7-iit{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(14px,2.4vw,26px);letter-spacing:5px;font-weight:700;
+    color:#ffffff;text-shadow:0 0 15px rgba(255,255,255,0.5);
+    margin-top:12px;
+  }
+  .s7-div{
+    width:min(280px,60%);height:2px;
+    background:linear-gradient(90deg,transparent,var(--cyan),var(--g2),transparent);
+    margin:22px auto;box-shadow:0 0 12px var(--cyan);
+  }
+  .s7-meraz{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(32px,5.5vw,68px);font-weight:900;letter-spacing:12px;
+    color:#fff;
+    text-shadow:0 0 25px var(--cyan), 0 0 50px rgba(0,240,255,0.5);
+  }
+  .s7-date{
+    font-family:'Share Tech Mono',monospace;
+    font-size:clamp(13px,1.8vw,20px);letter-spacing:6px;color:var(--amber);
+    margin-top:8px;font-weight:700;
+  }
+  .s7-engage{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(16px,2.8vw,32px);font-weight:900;letter-spacing:6px;
+    margin-top:26px;color:var(--red);
+    text-shadow:0 0 25px var(--red), 0 0 60px rgba(255,37,37,0.6);
+    animation:warnFlash 0.8s step-end infinite;
+    padding:8px 18px;border:1px dashed rgba(255,37,37,0.5);
+    background:rgba(255,37,37,0.08);
+  }
+
+  /* Start overlay */
+  .start-overlay{
+    position:fixed;inset:0;z-index:999;background:rgba(1,4,8,0.98);
+    display:flex;align-items:center;justify-content:center;flex-direction:column;
+    gap:14px;cursor:pointer;
+  }
+  .start-overlay.gone{display:none}
+  .start-overlay .s-text{
+    font-family:'Orbitron',sans-serif;font-size:clamp(15px,2.5vw,26px);
+    letter-spacing:6px;color:var(--g);animation:warnFlash 1s step-end infinite;font-weight:900;
+  }
+  .start-overlay .s-sub{font-size:11px;letter-spacing:4px;color:rgba(0,255,65,0.4)}
+</style>
+</head>
+<body>
+
+<div class="start-overlay" id="startScreen">
+  <div class="s-text">▶ INITIATE CLASSIFIED TRANSMISSION</div>
+  <div class="s-sub">CLICK TO LAUNCH · FULLSCREEN · SOUND ON</div>
+</div>
+
+<canvas id="bg-canvas"></canvas>
+<canvas id="static"></canvas>
+<div class="whiteout" id="whiteout"></div>
+
+<div class="term">
+  <div class="term-header">
+    <span id="hdr-left">SYS://INTERCEPTOR_NODE.v4</span>
+    <span class="live-badge"><span class="live-dot"></span> LIVE INTERCEPT</span>
+    <span id="hdr-time">--:--:--.---</span>
+    <span id="hdr-right">SEC-LEVEL: [EYES_ONLY]</span>
+  </div>
+
+    <div class="term-main-layout">
+      <!-- LEFT HUD SIDEBAR -->
+      <div class="hud-sidebar">
+        <div>
+          <div class="hud-sidebar-title">▸ RF TELEMETRY</div>
+          <div class="hud-bars">
+            <div class="hud-bar-row"><span>SIG_STRENGTH</span><span>-38dBm</span></div>
+            <div class="hud-meter"><div class="hud-meter-fill" style="width:92%"></div></div>
+            <div class="hud-bar-row"><span>PACKET_RATE</span><span>120Hz</span></div>
+            <div class="hud-meter"><div class="hud-meter-fill" style="width:84%;background:var(--g2)"></div></div>
+            <div class="hud-bar-row"><span>ENCRYPT_LVL</span><span>AES-256</span></div>
+            <div class="hud-meter"><div class="hud-meter-fill" style="width:100%;background:var(--amber)"></div></div>
+          </div>
+          <div class="hud-sidebar-title" style="margin-top:10px">▸ PACKET STREAM</div>
+          <div class="hud-stream" id="hudStream">
+            0x2A [ESP-NOW] ACK<br>
+            CH: 11 / RSSI -41<br>
+            NODE_01: ONLINE<br>
+            NODE_02: ONLINE<br>
+            NODE_03: ONLINE<br>
+            NODE_04: ONLINE<br>
+            SYN_BYTE: 0xBA77<br>
+            CRC32: PASS<br>
+            STREAM: CAPTURED
+          </div>
+        </div>
+        <div>
+          <div class="hud-reticle"></div>
+          <div style="font-size:9px;text-align:center;color:var(--cyan);letter-spacing:1px">BEARING: 042.8°</div>
+        </div>
+      </div>
+
+      <div class="term-body">
+        <!-- S0: SIGNAL DETECTED -->
+        <div class="scene" id="s0">
+          <div class="s0-warn">⚠ WARNING // UNIDENTIFIED TRANSMISSION ⚠</div>
+          <div class="s0-main">HOSTILE FREQUENCY DETECTED</div>
+          <div class="s0-freq">FREQ: 2.4 GHz // PROTOCOL: ENCRYPTED ESP-NOW STREAM</div>
+        </div>
+
+        <!-- S1: COORDINATES -->
+        <div class="scene" id="s1">
+          <div class="s1-label">▸ TRANSMISSION SOURCE TRIANGULATED</div>
+          <div class="s1-coords">21.1938° N &nbsp; 81.3509° E</div>
+          <div class="s1-sub">SECTOR: IIT BHILAI CAMPUS · KUTELABHATA · CHHATTISGARH</div>
+        </div>
+
+        <!-- S2: DECRYPTING -->
+        <div class="scene" id="s2">
+          <div class="s2-label">BREAKING 256-BIT STREAM CIPHER...</div>
+          <div class="s2-bar-track"><div class="s2-bar-fill" id="decryptBar"></div></div>
+          <div class="s2-pct" id="decryptPct">0%</div>
+          <div class="s2-hex" id="hexDump"></div>
+        </div>
+
+        <!-- S3: CORRUPTED INTEL FRAGMENTS -->
+        <div class="scene" id="s3">
+          <div class="s3-frag" id="fragText"></div>
+        </div>
+
+        <!-- S4: 4 HOSTILE UNITS -->
+        <div class="scene" id="s4">
+          <div class="s4-label">▸ 4 TACTICAL SQUADS IDENTIFIED IN RADAR RANGE</div>
+          <div class="s4-grid">
+            <div class="s4-blip">01</div>
+            <div class="s4-blip">02</div>
+            <div class="s4-blip">03</div>
+            <div class="s4-blip">04</div>
+          </div>
+          <div class="s4-count">4 FLEETS · INDEPENDENT COMMAND · POSITION CLASSIFIED</div>
+        </div>
+
+        <!-- NEW MERGED: LIVE 3D TACTICAL BATTLE GRID -->
+        <div class="scene" id="s_grid">
+          <div class="grid-wrap">
+            <div class="grid-hud-label">
+              <span>▸ SATELLITE HUD OVERLAY // LIVE KINETIC STRIKES</span>
+            </div>
+            <div class="grid-hud-radar">
+              <div class="grid-hud-sweep"></div>
+            </div>
+            <div class="battle-grid" id="battleGrid"></div>
+          </div>
+        </div>
+
+        <!-- S5: BRIEFING DOC -->
+        <div class="scene" id="s5">
+          <div class="s5-doc">
+            <div class="s5-line"><span class="lbl">OPERATION:</span> <span class="redact-cipher" id="r-op">████████████ [CORRUPTED]</span></div>
+            <div class="s5-line"><span class="lbl">CATEGORY:</span> <span class="dim">TACTICAL MULTI-FLEET WARFARE</span></div>
+            <div class="s5-line"><span class="lbl">FORCES:</span> <span class="dim">4 SIMULTANEOUS COMBAT UNITS</span></div>
+            <div class="s5-line"><span class="lbl">OBJECTIVE:</span> <span class="dim">ELIMINATE ENEMY COORDINATES · LAST SQUAD STANDING</span></div>
+            <div class="s5-line"><span class="lbl">FOG OF WAR:</span> <span style="color:var(--amber)">ENABLED // TARGET LOCATIONS HIDDEN</span></div>
+            <div class="s5-line"><span class="lbl">STATUS:</span> <span style="color:var(--red);font-weight:700">ARMED & AWAITING COMMENCEMENT</span></div>
+            <div class="s5-stamp">TOP SECRET</div>
+          </div>
+        </div>
+
+        <!-- S6: TITLE REVEAL (GLITCH THEN SNAP REVEAL) -->
+        <div class="scene" id="s6">
+          <div class="s6-op">
+            <div class="s6-pre" id="s6Pre">PROJECT CODENAME</div>
+            <div class="s6-name-box" id="s6Box">
+              <div class="s6-name" id="glitchTitle">█▓▒░?#$!*</div>
+            </div>
+            <div class="s6-tag" id="s6Tag">DATA ENCRYPTED // ACCESS DENIED</div>
+            <div class="s6-sub" id="s6Sub">CLASSIFICATION LEVEL 5 · IDENTITY TOP SECRET</div>
+          </div>
+        </div>
+
+        <!-- S7: FINAL REVEAL (ELECTROMOS + IIT BHILAI + MERAZ 2026) -->
+        <div class="scene" id="s7">
+          <div class="s7-final">
+            <div class="s7-origin">▸ PRESENTED BY</div>
+            <div class="s7-name">ELECTROMOS</div>
+            <div class="s7-iit">THE ELECTRONICS CLUB OF IIT BHILAI</div>
+            <div class="s7-div"></div>
+            <div class="s7-meraz">MERAZ 2026</div>
+            <div class="s7-date">OCTOBER 2026 · ARENAS PREPARED</div>
+            <div class="s7-engage">▸ PREPARE FOR ENGAGEMENT ◂</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT HUD SIDEBAR -->
+      <div class="hud-sidebar">
+        <div>
+          <div class="hud-sidebar-title">▸ FLEET STATUS</div>
+          <div class="hud-bars">
+            <div class="hud-bar-row"><span style="color:var(--cyan)">TEAM 1</span><span style="color:var(--cyan)">ARMED</span></div>
+            <div class="hud-bar-row"><span style="color:var(--pink)">TEAM 2</span><span style="color:var(--pink)">ARMED</span></div>
+            <div class="hud-bar-row"><span style="color:var(--purple)">TEAM 3</span><span style="color:var(--purple)">ARMED</span></div>
+            <div class="hud-bar-row"><span style="color:var(--g2)">TEAM 4</span><span style="color:var(--g2)">ARMED</span></div>
+          </div>
+          <div class="hud-sidebar-title" style="margin-top:10px">▸ PROTOCOL MAP</div>
+          <div style="font-size:9px;line-height:1.7;color:rgba(0,240,255,0.7)">
+            PHY: 802.11 b/g/n<br>
+            SECURITY: ISOLATED<br>
+            LATENCY: &lt; 3.2ms<br>
+            BUFFER: 512B RING<br>
+            AUTHORITY: CENTRAL<br>
+            FOG_OF_WAR: ACTIVE
+          </div>
+        </div>
+        <div>
+          <div class="hud-sidebar-title">▸ SYS VOLTAGE</div>
+          <div style="font-family:'Orbitron',sans-serif;font-size:15px;color:var(--cyan);text-align:center;font-weight:900">
+            3.30 <span style="font-size:9px;color:rgba(0,240,255,0.7)">VDC</span>
+          </div>
+          <div style="font-size:8px;text-align:center;color:var(--g2);margin-top:3px">ESP32-S3 SOC ACTIVE</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TERMINAL FOOTER -->
+    <div class="term-footer">
+      <span>LOC: 21.1938° N / 81.3509° E</span>
+      <div class="hud-oscillo">
+        <span>RF SIGNAL:</span>
+        <canvas class="hud-oscillo-canvas" id="oscilloCanvas"></canvas>
+      </div>
+      <span>TARGET: MERAZ_2026 // RESTRICTED ACCESS</span>
+    </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════
+   AUDIO SYNTHESIS ENGINE (No external audio files)
+   ═══════════════════════════════════════════════════════ */
+let ctx, master, reverb;
+
+function initAudio(){
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  master = ctx.createGain(); master.gain.value = 0.85; master.connect(ctx.destination);
+  const len = ctx.sampleRate * 2.2;
+  const imp = ctx.createBuffer(2, len, ctx.sampleRate);
+  for(let c=0; c<2; c++){
+    const d = imp.getChannelData(c);
+    for(let i=0; i<len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2.4);
+  }
+  reverb = ctx.createConvolver(); reverb.buffer = imp;
+}
+
+function rv(node, dryAmt, wetAmt){
+  const dg = ctx.createGain(); dg.gain.value = dryAmt;
+  const wg = ctx.createGain(); wg.gain.value = wetAmt;
+  node.connect(dg).connect(master);
+  node.connect(reverb).connect(wg).connect(master);
+}
+
+/* Radio static burst */
+function staticBurst(delay=0, dur=0.25, vol=0.2){
+  const t = ctx.currentTime + delay;
+  const buf = ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0; i<d.length; i++) d[i] = (Math.random()*2-1);
+  const n = ctx.createBufferSource(); n.buffer = buf;
+  const g = ctx.createGain(); g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass';
+  f.frequency.value = 2400 + Math.random()*2000; f.Q.value = 0.6;
+  n.connect(f).connect(g).connect(master); n.start(t);
+}
+
+/* Morse code tone */
+function morseBeep(delay=0, freq=850, dur=0.07){
+  const t = ctx.currentTime + delay;
+  const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = freq;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(0.18, t+0.005);
+  g.gain.setValueAtTime(0.18, t+dur-0.005);
+  g.gain.linearRampToValueAtTime(0, t+dur);
+  o.connect(g).connect(master); o.start(t); o.stop(t+dur+0.01);
+}
+function morsePattern(delay=0, pat='...---...'){
+  let t = delay;
+  for(const c of pat){
+    if(c==='.'){ morseBeep(t, 850, 0.06); t += 0.1; }
+    else if(c==='-'){ morseBeep(t, 850, 0.18); t += 0.22; }
+    else t += 0.14;
+  }
+}
+
+/* Alarm tone */
+function alarmTone(delay=0, count=3){
+  for(let i=0; i<count; i++){
+    const t = ctx.currentTime + delay + i*0.35;
+    const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = 920;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.09, t); g.gain.setValueAtTime(0, t+0.14);
+    o.connect(g).connect(master); o.start(t); o.stop(t+0.16);
+  }
+}
+
+/* Sonar with reverberant underwater tail */
+function sonarPing(delay=0){
+  const t = ctx.currentTime + delay;
+  const o = ctx.createOscillator(); o.type = 'sine';
+  o.frequency.setValueAtTime(1550, t); o.frequency.exponentialRampToValueAtTime(820, t+0.28);
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.28, t); g.gain.exponentialRampToValueAtTime(0.001, t+1.7);
+  rv(o.connect(g), 0.45, 0.65); o.start(t); o.stop(t+1.8);
+  /* sub thud */
+  const s = ctx.createOscillator(); s.type = 'sine'; s.frequency.value = 110;
+  const sg = ctx.createGain(); sg.gain.setValueAtTime(0.14, t); sg.gain.exponentialRampToValueAtTime(0.001, t+0.8);
+  s.connect(sg).connect(master); s.start(t); s.stop(t+0.9);
+}
+
+/* Data chirp */
+function dataChirp(delay=0){
+  const t = ctx.currentTime + delay;
+  for(let i=0; i<6; i++){
+    const o = ctx.createOscillator(); o.type = 'square';
+    o.frequency.value = 500 + Math.random()*2200;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.04, t+i*0.03); g.gain.exponentialRampToValueAtTime(0.001, t+i*0.03+0.025);
+    o.connect(g).connect(master); o.start(t+i*0.03); o.stop(t+i*0.03+0.03);
+  }
+}
+
+/* Ambient drone */
+function startDrone(){
+  const t = ctx.currentTime;
+  [48, 96, 144].forEach(freq=>{
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = freq;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.04, t+3); g.gain.setValueAtTime(0.04, t+42);
+    g.gain.linearRampToValueAtTime(0, t+48);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 180;
+    o.connect(f).connect(g).connect(master); o.start(t); o.stop(t+50);
+  });
+}
+
+/* Glitch stutter audio */
+function glitchAudio(delay=0){
+  const t = ctx.currentTime + delay;
+  for(let i=0; i<6; i++){
+    const dur = 0.02 + Math.random()*0.035;
+    const buf = ctx.createBuffer(1, ctx.sampleRate*dur, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for(let j=0; j<d.length; j++) d[j] = Math.random()*2-1;
+    const n = ctx.createBufferSource(); n.buffer = buf;
+    const g = ctx.createGain(); g.gain.value = 0.14;
+    n.connect(g).connect(master); n.start(t + i*0.05);
+  }
+}
+
+/* Explosion sound effect */
+function explosionSound(delay=0){
+  const t = ctx.currentTime + delay;
+  /* bright snap */
+  const cLen = ctx.sampleRate * 0.06;
+  const cBuf = ctx.createBuffer(1, cLen, ctx.sampleRate);
+  const cd = cBuf.getChannelData(0);
+  for(let i=0; i<cLen; i++) cd[i] = (Math.random()*2-1) * Math.pow(1 - i/cLen, 5);
+  const crack = ctx.createBufferSource(); crack.buffer = cBuf;
+  const cg = ctx.createGain(); cg.gain.setValueAtTime(0.4, t);
+  crack.connect(cg).connect(master); crack.start(t);
+
+  /* rumble body */
+  const bLen = ctx.sampleRate * 0.45;
+  const bBuf = ctx.createBuffer(1, bLen, ctx.sampleRate);
+  const bd = bBuf.getChannelData(0);
+  for(let i=0; i<bLen; i++) bd[i] = (Math.random()*2-1) * Math.pow(1 - i/bLen, 2.2);
+  const body = ctx.createBufferSource(); body.buffer = bBuf;
+  const bg = ctx.createGain(); bg.gain.setValueAtTime(0.35, t); bg.gain.exponentialRampToValueAtTime(0.001, t+0.45);
+  const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 350; bp.Q.value = 0.8;
+  body.connect(bp).connect(bg).connect(master); body.start(t);
+
+  /* deep sub bass */
+  const sub = ctx.createOscillator(); sub.type = 'sine';
+  sub.frequency.setValueAtTime(85, t); sub.frequency.exponentialRampToValueAtTime(22, t+0.6);
+  const sg = ctx.createGain(); sg.gain.setValueAtTime(0.55, t); sg.gain.exponentialRampToValueAtTime(0.001, t+0.6);
+  sub.connect(sg).connect(master); sub.start(t); sub.stop(t+0.7);
+}
+
+/* Water splash audio */
+function waterSplash(delay=0){
+  const t = ctx.currentTime + delay;
+  const len = ctx.sampleRate * 0.3;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0; i<len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 3.5);
+  const n = ctx.createBufferSource(); n.buffer = buf;
+  const g = ctx.createGain(); g.gain.setValueAtTime(0.12, t); g.gain.exponentialRampToValueAtTime(0.001, t+0.3);
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 3600; f.Q.value = 0.4;
+  rv(n.connect(f).connect(g), 0.4, 0.6); n.start(t);
+}
+
+/* Tension riser */
+function tensionRiser(delay=0, dur=3.2){
+  const t = ctx.currentTime + delay;
+  [70, 140, 280, 560].forEach(base=>{
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(base, t); o.frequency.exponentialRampToValueAtTime(base*4.5, t+dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, t); g.gain.linearRampToValueAtTime(0.05, t+dur*0.88);
+    g.gain.exponentialRampToValueAtTime(0.001, t+dur);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass';
+    f.frequency.setValueAtTime(350, t); f.frequency.exponentialRampToValueAtTime(6500, t+dur);
+    o.connect(f).connect(g).connect(master); o.start(t); o.stop(t+dur+0.1);
+  });
+}
+
+/* Accelerating heartbeat */
+function heartbeat(delay=0, count=5, startBPM=50, endBPM=155){
+  let time = ctx.currentTime + delay;
+  for(let i=0; i<count; i++){
+    const bpm = startBPM + (endBPM-startBPM)*(i/count);
+    const interval = 60/bpm;
+    const vol = 0.16 + 0.3*(i/count);
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(52, time); o.frequency.exponentialRampToValueAtTime(24, time+0.15);
+    const g = ctx.createGain(); g.gain.setValueAtTime(vol, time); g.gain.exponentialRampToValueAtTime(0.001, time+0.2);
+    o.connect(g).connect(master); o.start(time); o.stop(time+0.25);
+    time += interval;
+  }
+}
+
+/* Massive bass drop impact */
+function titleImpact(delay=0){
+  const t = ctx.currentTime + delay;
+  const s = ctx.createOscillator(); s.type = 'sine';
+  s.frequency.setValueAtTime(170, t); s.frequency.exponentialRampToValueAtTime(18, t+2.4);
+  const sg = ctx.createGain(); sg.gain.setValueAtTime(0.85, t); sg.gain.exponentialRampToValueAtTime(0.001, t+2.4);
+  s.connect(sg).connect(master); s.start(t); s.stop(t+2.5);
+
+  const bl = ctx.sampleRate * 0.12; const bb = ctx.createBuffer(1, bl, ctx.sampleRate);
+  const bd = bb.getChannelData(0);
+  for(let i=0; i<bl; i++) bd[i] = (Math.random()*2-1)*Math.pow(1 - i/bl, 3);
+  const bn = ctx.createBufferSource(); bn.buffer = bb;
+  const bg = ctx.createGain(); bg.gain.setValueAtTime(0.55, t);
+  bn.connect(bg).connect(master); bn.start(t);
+
+  const r = ctx.createOscillator(); r.type = 'sine'; r.frequency.value = 220;
+  const rg = ctx.createGain(); rg.gain.setValueAtTime(0.14, t); rg.gain.exponentialRampToValueAtTime(0.001, t+2);
+  rv(r.connect(rg), 0.25, 0.75); r.start(t); r.stop(t+2.1);
+}
+
+/* ═══════════════════════════════════════════════════════
+   DYNAMIC SCI-FI BACKGROUND ENGINE (Matrix, Circuit Traces, Radar HUD)
+   ═══════════════════════════════════════════════════════ */
+const bgCanvas = document.getElementById('bg-canvas');
+const bgCtx = bgCanvas.getContext('2d');
+let bgW, bgH;
+
+function resizeBg(){
+  bgW = bgCanvas.width = innerWidth;
+  bgH = bgCanvas.height = innerHeight;
+}
+addEventListener('resize', resizeBg);
+resizeBg();
+
+/* 1. Circuit Data Pulses */
+const circuitPulses = [];
+for(let i=0; i<16; i++){
+  circuitPulses.push({
+    x: Math.random() * bgW,
+    y: Math.random() * bgH,
+    isHoriz: Math.random() > 0.5,
+    speed: Math.random() * 4 + 2.5,
+    len: Math.random() * 40 + 20,
+    color: Math.random() > 0.4 ? '0,240,255' : '57,255,20'
+  });
+}
+
+/* 2. Matrix Rain Columns */
+const matrixCols = 24;
+const matrixDrops = [];
+const matrixChars = '0123456789ABCDEFØXΨΩ';
+for(let i=0; i<matrixCols; i++){
+  matrixDrops.push({
+    x: i < matrixCols/2 ? (i * 22 + 10) : (bgW - (matrixCols - i) * 22 - 10),
+    y: Math.random() * bgH,
+    speed: Math.random() * 2 + 1.2
+  });
+}
+
+/* 3. Floating Floating HUD Targets */
+const hudTargets = [
+  {x: 0.18, y: 0.25, lbl: 'NODE_ALPHA // RNG: 18.4KM'},
+  {x: 0.82, y: 0.28, lbl: 'NODE_BRAVO // RNG: 22.1KM'},
+  {x: 0.22, y: 0.78, lbl: 'NODE_CHARLIE // RNG: 12.8KM'},
+  {x: 0.78, y: 0.75, lbl: 'NODE_DELTA // RNG: 29.5KM'}
+];
+
+/* 4. Sonar Ripples */
+const sonarRipples = [];
+function addSonarRipple(){
+  sonarRipples.push({
+    x: bgW * 0.5,
+    y: bgH * 0.5,
+    r: 15,
+    maxR: Math.max(bgW, bgH) * 0.9,
+    alpha: 0.65
+  });
+}
+setInterval(addSonarRipple, 2800);
+
+let bgTime = 0;
+function drawDynamicBg(){
+  bgTime += 0.016;
+
+  /* Base deep ocean canvas */
+  bgCtx.fillStyle = '#01050a';
+  bgCtx.fillRect(0, 0, bgW, bgH);
+
+  /* Deep Atmospheric Glowing Plasma Orbs */
+  const cx1 = bgW * 0.3 + Math.sin(bgTime * 0.6) * (bgW * 0.25);
+  const cy1 = bgH * 0.35 + Math.cos(bgTime * 0.5) * (bgH * 0.22);
+  const grad1 = bgCtx.createRadialGradient(cx1, cy1, 10, cx1, cy1, bgW * 0.6);
+  grad1.addColorStop(0, 'rgba(0, 160, 255, 0.35)');
+  grad1.addColorStop(0.5, 'rgba(0, 60, 140, 0.18)');
+  grad1.addColorStop(1, 'transparent');
+  bgCtx.fillStyle = grad1;
+  bgCtx.fillRect(0, 0, bgW, bgH);
+
+  const cx2 = bgW * 0.7 + Math.cos(bgTime * 0.7) * (bgW * 0.22);
+  const cy2 = bgH * 0.65 + Math.sin(bgTime * 0.6) * (bgH * 0.22);
+  const grad2 = bgCtx.createRadialGradient(cx2, cy2, 10, cx2, cy2, bgW * 0.55);
+  grad2.addColorStop(0, 'rgba(57, 255, 20, 0.22)');
+  grad2.addColorStop(0.5, 'rgba(0, 100, 60, 0.12)');
+  grad2.addColorStop(1, 'transparent');
+  bgCtx.fillStyle = grad2;
+  bgCtx.fillRect(0, 0, bgW, bgH);
+
+  const cx3 = bgW * 0.5;
+  const cy3 = bgH * 0.5 + Math.sin(bgTime * 0.4) * 80;
+  const grad3 = bgCtx.createRadialGradient(cx3, cy3, 10, cx3, cy3, bgW * 0.45);
+  grad3.addColorStop(0, 'rgba(180, 77, 255, 0.18)');
+  grad3.addColorStop(1, 'transparent');
+  bgCtx.fillStyle = grad3;
+  bgCtx.fillRect(0, 0, bgW, bgH);
+
+  /* Circuit Grid Lines */
+  const gridSize = 65;
+  const offsetX = (bgTime * 14) % gridSize;
+  const offsetY = (bgTime * 10) % gridSize;
+  bgCtx.strokeStyle = 'rgba(0, 240, 255, 0.085)';
+  bgCtx.lineWidth = 1;
+  bgCtx.beginPath();
+  for(let x = offsetX; x < bgW; x += gridSize){
+    bgCtx.moveTo(x, 0); bgCtx.lineTo(x, bgH);
+  }
+  for(let y = offsetY; y < bgH; y += gridSize){
+    bgCtx.moveTo(0, y); bgCtx.lineTo(bgW, y);
+  }
+  bgCtx.stroke();
+
+  /* Grid intersection crosshairs */
+  bgCtx.fillStyle = 'rgba(0, 240, 255, 0.35)';
+  for(let x = offsetX; x < bgW; x += gridSize * 2){
+    for(let y = offsetY; y < bgH; y += gridSize * 2){
+      bgCtx.fillRect(x - 2, y, 5, 1);
+      bgCtx.fillRect(x, y - 2, 1, 5);
+    }
+  }
+
+  /* Circuit Data Pulses */
+  for(const p of circuitPulses){
+    bgCtx.strokeStyle = `rgba(${p.color}, 0.85)`;
+    bgCtx.lineWidth = 2;
+    bgCtx.shadowColor = `rgba(${p.color}, 0.9)`;
+    bgCtx.shadowBlur = 10;
+    bgCtx.beginPath();
+    if(p.isHoriz){
+      p.x += p.speed;
+      if(p.x > bgW + 100) p.x = -100;
+      bgCtx.moveTo(p.x - p.len, p.y);
+      bgCtx.lineTo(p.x, p.y);
+    } else {
+      p.y += p.speed;
+      if(p.y > bgH + 100) p.y = -100;
+      bgCtx.moveTo(p.x, p.y - p.len);
+      bgCtx.lineTo(p.x, p.y);
+    }
+    bgCtx.stroke();
+  }
+  bgCtx.shadowBlur = 0;
+
+  /* Matrix Rain Columns along the margins */
+  bgCtx.font = '10px monospace';
+  for(let i=0; i<matrixDrops.length; i++){
+    const d = matrixDrops[i];
+    d.y += d.speed;
+    if(d.y > bgH) d.y = 0;
+    for(let j=0; j<10; j++){
+      const charY = d.y - j * 14;
+      if(charY > 0 && charY < bgH){
+        const alpha = Math.max(0, (1 - j / 10) * 0.35);
+        bgCtx.fillStyle = j === 0 ? 'rgba(255,255,255,0.7)' : `rgba(0, 255, 100, ${alpha})`;
+        const ch = matrixChars[Math.floor(Math.random() * matrixChars.length)];
+        bgCtx.fillText(ch, d.x, charY);
+      }
+    }
+  }
+
+  /* Concentric Tactical Radar & Angle Degree Ticks */
+  const midX = bgW * 0.5, midY = bgH * 0.5;
+  const radarRadii = [140, 280, 440, 620];
+  bgCtx.strokeStyle = 'rgba(0, 240, 255, 0.12)';
+  bgCtx.setLineDash([6, 8]);
+  for(const r of radarRadii){
+    bgCtx.beginPath();
+    bgCtx.arc(midX, midY, r, 0, Math.PI * 2);
+    bgCtx.stroke();
+  }
+  bgCtx.setLineDash([]);
+
+  /* Degree markings */
+  const degAngles = [0, 45, 90, 135, 180, 225, 270, 315];
+  bgCtx.font = '9px Orbitron, monospace';
+  bgCtx.fillStyle = 'rgba(0, 240, 255, 0.3)';
+  for(const deg of degAngles){
+    const rad = (deg * Math.PI) / 180;
+    const tx = midX + Math.cos(rad) * 285;
+    const ty = midY + Math.sin(rad) * 285;
+    bgCtx.fillText(`${deg}°`, tx - 8, ty + 3);
+  }
+
+  /* Rotating Sweep Wedge */
+  const sweepAngle = bgTime * 0.9;
+  const sweepLen = Math.max(bgW, bgH) * 0.75;
+  const endX = midX + Math.cos(sweepAngle) * sweepLen;
+  const endY = midY + Math.sin(sweepAngle) * sweepLen;
+  const sweepGrad = bgCtx.createLinearGradient(midX, midY, endX, endY);
+  sweepGrad.addColorStop(0, 'rgba(0, 240, 255, 0.35)');
+  sweepGrad.addColorStop(0.5, 'rgba(0, 240, 255, 0.08)');
+  sweepGrad.addColorStop(1, 'transparent');
+  bgCtx.strokeStyle = sweepGrad;
+  bgCtx.lineWidth = 2.5;
+  bgCtx.beginPath();
+  bgCtx.moveTo(midX, midY);
+  bgCtx.lineTo(endX, endY);
+  bgCtx.stroke();
+
+  /* HUD Target Reticles in space */
+  for(const t of hudTargets){
+    const tx = t.x * bgW + Math.sin(bgTime + t.x * 10) * 12;
+    const ty = t.y * bgH + Math.cos(bgTime + t.y * 10) * 12;
+    bgCtx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
+    bgCtx.lineWidth = 1;
+    /* target corners */
+    bgCtx.strokeRect(tx - 12, ty - 12, 24, 24);
+    bgCtx.beginPath();
+    bgCtx.arc(tx, ty, 3, 0, Math.PI * 2);
+    bgCtx.fillStyle = 'rgba(255, 45, 120, 0.7)';
+    bgCtx.fill();
+    bgCtx.font = '8px Share Tech Mono, monospace';
+    bgCtx.fillStyle = 'rgba(0, 240, 255, 0.45)';
+    bgCtx.fillText(t.lbl, tx + 16, ty + 4);
+  }
+
+  /* Expanding Sonar Shockwaves */
+  for(let i = sonarRipples.length - 1; i >= 0; i--){
+    const rip = sonarRipples[i];
+    rip.r += 2.8;
+    rip.alpha -= 0.004;
+    if(rip.alpha <= 0 || rip.r >= rip.maxR){
+      sonarRipples.splice(i, 1);
+      continue;
+    }
+    bgCtx.strokeStyle = `rgba(0, 240, 255, ${rip.alpha * 0.6})`;
+    bgCtx.lineWidth = 2;
+    bgCtx.shadowColor = 'rgba(0, 240, 255, 0.8)';
+    bgCtx.shadowBlur = 12;
+    bgCtx.beginPath();
+    bgCtx.arc(rip.x, rip.y, rip.r, 0, Math.PI * 2);
+    bgCtx.stroke();
+    bgCtx.shadowBlur = 0;
+  }
+
+  requestAnimationFrame(drawDynamicBg);
+}
+drawDynamicBg();
+
+/* Live Oscilloscope in Footer */
+const oscCanvas = document.getElementById('oscilloCanvas');
+const oscCtx = oscCanvas ? oscCanvas.getContext('2d') : null;
+function drawOscilloscope(){
+  if(!oscCtx) return;
+  oscCanvas.width = 110; oscCanvas.height = 18;
+  oscCtx.clearRect(0, 0, 110, 18);
+  oscCtx.strokeStyle = '#00f0ff';
+  oscCtx.lineWidth = 1.5;
+  oscCtx.shadowColor = '#00f0ff';
+  oscCtx.shadowBlur = 6;
+  oscCtx.beginPath();
+  const time = performance.now() * 0.008;
+  for(let x = 0; x < 110; x++){
+    const y = 9 + Math.sin(x * 0.18 + time) * 4.5 + Math.sin(x * 0.35 - time * 1.5) * 2;
+    if(x === 0) oscCtx.moveTo(x, y);
+    else oscCtx.lineTo(x, y);
+  }
+  oscCtx.stroke();
+  requestAnimationFrame(drawOscilloscope);
+}
+drawOscilloscope();
+
+/* Dynamic Stream updater in left sidebar */
+const hudStreamEl = document.getElementById('hudStream');
+const streamPackets = [
+  '0x4F [ESP-NOW] RECV_OK',
+  'CH: 11 / RSSI -39dBm',
+  'SYNC_WORD: 0xBA77CAFE',
+  'NODE_01: TARGET_LOCK',
+  'NODE_02: HEAP_OK 284K',
+  'NODE_03: COMMS_SYNC',
+  'NODE_04: RETRY 0',
+  'TX_PWR: +20dBm BOOST',
+  'FREQ_HOP: 2412 MHz',
+  'LATENCY: 1.84ms'
+];
+setInterval(()=>{
+  if(!hudStreamEl) return;
+  const newMsg = streamPackets[Math.floor(Math.random() * streamPackets.length)];
+  const lines = hudStreamEl.innerHTML.split('<br>');
+  lines.shift();
+  lines.push(newMsg);
+  hudStreamEl.innerHTML = lines.join('<br>');
+}, 1100);
+
+/* ═══════════════════════════════════════════════════════
+   STATIC TV NOISE CANVAS
+   ═══════════════════════════════════════════════════════ */
+const staticCanvas = document.getElementById('static');
+const sctx = staticCanvas.getContext('2d');
+let staticOn = false;
+function resizeStatic(){ staticCanvas.width = innerWidth; staticCanvas.height = innerHeight; }
+addEventListener('resize', resizeStatic); resizeStatic();
+function drawStatic(){
+  if(!staticOn){ requestAnimationFrame(drawStatic); return; }
+  const w = staticCanvas.width, h = staticCanvas.height;
+  const img = sctx.createImageData(w, h);
+  const d = img.data;
+  for(let i=0; i<d.length; i+=4){
+    const v = Math.random()*255; d[i]=v; d[i+1]=v; d[i+2]=v; d[i+3]=255;
+  }
+  sctx.putImageData(img, 0, 0);
+  requestAnimationFrame(drawStatic);
+}
+drawStatic();
+
+function showStatic(heavy=false, dur=280){
+  staticOn = true;
+  staticCanvas.classList.add(heavy ? 'heavy' : 'on');
+  setTimeout(()=>{ staticOn=false; staticCanvas.classList.remove('on','heavy'); }, dur);
+}
+
+function flash(){
+  const w = document.getElementById('whiteout');
+  w.classList.add('flash'); setTimeout(()=>w.classList.remove('flash'), 80);
+}
+function shakeScreen(){
+  document.body.classList.add('shake');
+  setTimeout(()=>document.body.classList.remove('shake'), 380);
+}
+
+/* ═══════════════════════════════════════════════════════
+   TACTICAL GRID ENGINE (Hits, Explosions, Torpedoes)
+   ═══════════════════════════════════════════════════════ */
+const battleGrid = document.getElementById('battleGrid');
+const cells = [];
+for(let i=0; i<64; i++){
+  const c = document.createElement('div');
+  c.className = 'grid-cell';
+  battleGrid.appendChild(c);
+  cells.push(c);
+}
+
+const shipCells = [2,3,4, 11,19,27, 36,44,52, 49,50,51, 14,22, 61,62,63];
+const shipSet = new Set(shipCells);
+
+function strikeCell(idx, isShip){
+  const cell = cells[idx];
+  if(!cell || cell.classList.contains('ship-hit') || cell.classList.contains('water-hit')) return;
+  if(isShip){
+    cell.classList.add('ship-hit');
+    explosionSound();
+    flash();
+    shakeScreen();
+    /* spawn fireball particle */
+    const r = cell.getBoundingClientRect();
+    const el = document.createElement('div');
+    el.className = 'explosion';
+    el.style.left = (r.left + r.width/2 - 90) + 'px';
+    el.style.top = (r.top + r.height/2 - 90) + 'px';
+    document.body.appendChild(el);
+    setTimeout(()=>el.remove(), 600);
+  } else {
+    cell.classList.add('water-hit');
+    waterSplash();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCRAMBLED / CORRUPTED GLITCH TITLE EFFECT
+   (DOES NOT REVEAL THE GAME NAME)
+   ═══════════════════════════════════════════════════════ */
+const glyphs = '█▓▒░#$!%&?@*§Ø±µЖΨΩ0123456789ABCDEF<>{}[]';
+let glitchInterval = null;
+
+function startGlitchCipher(){
+  const el = document.getElementById('glitchTitle');
+  const patterns = [
+    '█▓▒░?#$!*',
+    'PROJ://[REDACTED]',
+    'SECTOR_4_WAR',
+    'CORRUPTED_CIPHER',
+    'Ø_PROTOCOL_X',
+    'ACCESS_DENIED',
+    '████████████',
+    'FLEET_COMBAT_§',
+    'CIPHER_LOCKED'
+  ];
+  let pIdx = 0;
+  glitchInterval = setInterval(()=>{
+    /* randomly generate corrupted glyph string */
+    let str = '';
+    const target = patterns[pIdx % patterns.length];
+    for(let i=0; i<target.length; i++){
+      if(Math.random() < 0.45){
+        str += glyphs[Math.floor(Math.random()*glyphs.length)];
+      } else {
+        str += target[i];
+      }
+    }
+    el.textContent = str;
+    if(Math.random() < 0.25) pIdx++;
+    glitchAudio();
+  }, 75);
+}
+
+function stopGlitchCipher(){
+  if(glitchInterval){ clearInterval(glitchInterval); glitchInterval = null; }
+}
+
+/* ═══════════════════════════════════════════════════════
+   SCENE MANAGEMENT & TIMELINE
+   ═══════════════════════════════════════════════════════ */
+let currentScene = null;
+function showScene(id){
+  if(currentScene) currentScene.classList.remove('active');
+  const el = document.getElementById(id);
+  el.classList.add('active');
+  currentScene = el;
+}
+
+/* Header clock */
+setInterval(()=>{
+  const d = new Date();
+  document.getElementById('hdr-time').textContent =
+    d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3,'0');
+}, 50);
+
+/* Pre-build randomized attack sequence */
+const waterPool = [];
+for(let i=0; i<64; i++) if(!shipSet.has(i)) waterPool.push(i);
+const strikes = [];
+for(let i=0; i<9; i++){
+  if(i < shipCells.length) strikes.push({idx: shipCells[i], isShip: true});
+  if(waterPool.length){
+    const rndIdx = waterPool.splice(Math.floor(Math.random()*waterPool.length), 1)[0];
+    strikes.push({idx: rndIdx, isShip: false});
+  }
+}
+
+function startSequence(){
+  startDrone();
+  const Q = [];
+
+  /* 0s: Warning + static + alarm */
+  Q.push({t: 0, fn: ()=>{ showStatic(true, 450); staticBurst(0, 0.4, 0.25); alarmTone(0.1, 3); }});
+  Q.push({t: 0.7, fn: ()=>{ showScene('s0'); sonarPing(); }});
+
+  /* 4.5s: Triangulation Coordinates */
+  Q.push({t: 4.5, fn: ()=>{
+    showStatic(false, 200); staticBurst(0, 0.2); morsePattern(0.1, '.-.. --- -.-.');
+    showScene('s1'); dataChirp(0.2);
+  }});
+
+  /* 8.5s: Decrypting progress bar */
+  Q.push({t: 8.5, fn: ()=>{
+    showStatic(false, 150); staticBurst(0, 0.15); showScene('s2');
+    const bar = document.getElementById('decryptBar');
+    const pct = document.getElementById('decryptPct');
+    const hex = document.getElementById('hexDump');
+    let p = 0;
+    const iv = setInterval(()=>{
+      p += Math.random()*9 + 3;
+      if(p > 100) p = 100;
+      bar.style.width = p + '%';
+      pct.textContent = Math.floor(p) + '%';
+      const h = Array.from({length: 44}, ()=>Math.floor(Math.random()*256).toString(16).padStart(2,'0')).join(' ');
+      hex.textContent = h;
+      dataChirp();
+      if(p >= 100) clearInterval(iv);
+    }, 160);
+  }});
+
+  /* 13s: Corrupted text fragments */
+  Q.push({t: 13, fn: ()=>{
+    showStatic(true, 300); glitchAudio(); showScene('s3');
+    const frag = document.getElementById('fragText');
+    frag.innerHTML = '<span class="redacted">STR█TEGY</span><br><span class="redacted">DEC█PTION</span><br><span class="redacted">DESTR█CTION</span>';
+    setTimeout(()=>{
+      glitchAudio(); staticBurst(0,0.1);
+      frag.innerHTML = '<span class="clear">STRATEGY.</span><br><span class="redacted">DEC█PTION</span><br><span class="redacted">DESTR█CTION</span>';
+    }, 800);
+    setTimeout(()=>{
+      glitchAudio(); staticBurst(0,0.1);
+      frag.innerHTML = '<span class="clear">STRATEGY.</span><br><span class="clear">DECEPTION.</span><br><span class="redacted">DESTR█CTION</span>';
+    }, 1600);
+    setTimeout(()=>{
+      glitchAudio(); staticBurst(0,0.1);
+      frag.innerHTML = '<span class="clear">STRATEGY.</span><br><span class="clear">DECEPTION.</span><br><span class="clear" style="color:var(--red);text-shadow:0 0 25px var(--red)">DESTRUCTION.</span>';
+    }, 2400);
+  }});
+
+  /* 17.5s: 4 Hostile Units */
+  Q.push({t: 17.5, fn: ()=>{
+    showStatic(false, 200); staticBurst(0, 0.2); sonarPing(); showScene('s4');
+  }});
+
+  /* 21.5s: LIVE TACTICAL BATTLE GRID ATTACKS MERGED HERE */
+  Q.push({t: 21.5, fn: ()=>{
+    showStatic(false, 250); sonarPing(); showScene('s_grid');
+  }});
+  /* Rapid fire hits on the grid */
+  for(let i=0; i<strikes.length; i++){
+    const st = strikes[i];
+    Q.push({t: 22.2 + i * 0.45, fn: ()=>strikeCell(st.idx, st.isShip)});
+  }
+
+  /* 29s: BRIEFING DOCUMENT */
+  Q.push({t: 29, fn: ()=>{
+    showStatic(false, 200); morsePattern(0, '... --- ...'); showScene('s5');
+  }});
+
+  /* 32.5s: Heartbeat + Tension Riser */
+  Q.push({t: 32.5, fn: ()=>{ heartbeat(0, 5, 55, 160); tensionRiser(0.2, 3.4); }});
+
+  /* 35.5s: GLITCH CODENAME SCRAMBLE (100% UNREVEALED / CLASSIFIED) */
+  Q.push({t: 35.5, fn: ()=>{
+    showStatic(true, 400); titleImpact(); showScene('s6');
+    startGlitchCipher();
+    setTimeout(()=>showStatic(true, 120), 200);
+    setTimeout(()=>showStatic(true, 90), 450);
+  }});
+
+  /* 38.8s: SECURITY LOCKDOWN - NAME IS NEVER REVEALED */
+  Q.push({t: 38.8, fn: ()=>{
+    stopGlitchCipher();
+    const titleEl = document.getElementById('glitchTitle');
+    titleEl.textContent = '[ REDACTED ]';
+    titleEl.classList.remove('revealed-title');
+    titleEl.style.color = 'var(--red)';
+    titleEl.style.textShadow = '0 0 35px var(--red), 0 0 70px rgba(255,37,37,0.7)';
+    titleEl.style.fontFamily = "'Share Tech Mono', monospace";
+    titleEl.style.letterSpacing = '6px';
+    
+    document.getElementById('s6Pre').textContent = 'SECURITY LOCKDOWN';
+    document.getElementById('s6Pre').style.color = 'var(--red)';
+    document.getElementById('s6Tag').textContent = 'ACCESS REJECTED // CLEARANCE REQUIRED';
+    document.getElementById('s6Tag').style.color = 'var(--red)';
+    document.getElementById('s6Sub').textContent = 'REVEAL AT COMMENCEMENT ONLY';
+    
+    const box = document.getElementById('s6Box');
+    box.style.borderColor = 'var(--red)';
+    box.style.boxShadow = '0 0 50px rgba(255,37,37,0.6)';
+    box.style.background = 'rgba(255,37,37,0.08)';
+
+    flash();
+    shakeScreen();
+    alarmTone(0, 2);
+  }});
+
+  /* 39.8s: QUICK STATIC CUT */
+  Q.push({t: 39.8, fn: ()=>{
+    showStatic(true, 220);
+    staticBurst(0, 0.22);
+  }});
+
+  /* 40.1s: ELECTROMOS + IIT BHILAI + MERAZ 2026 GRAND FINALE */
+  Q.push({t: 40.1, fn: ()=>{
+    showStatic(false, 180); sonarPing();
+    morsePattern(0.3, '-- . .-. .- --..');
+    showScene('s7');
+  }});
+
+  Q.forEach(q=>setTimeout(()=>q.fn(), q.t * 1000));
+}
+
+/* Start on click */
+document.getElementById('startScreen').addEventListener('click', function(){
+  this.classList.add('gone');
+  initAudio();
+  if(document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(()=>{});
+  startSequence();
+});
+</script>
+</body>
+</html>
