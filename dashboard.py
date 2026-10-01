@@ -556,6 +556,11 @@ body.perf .blur{backdrop-filter:none!important}
 .teams.row{grid-template-columns:repeat(4,1fr);grid-template-rows:1fr}
 .teams.row .tname{font-size:clamp(11px,1.45vmin,19px)}
 .teams.row .tp{padding:10px 11px 9px}
+/* auto-fit when force-started with fewer than 4 teams: reuses the 1xN row
+   layout, just with bigger text since each panel gets more room */
+.teams.fit .tname{font-size:clamp(15px,2.6vmin,32px)}
+.teams.fit .tp{padding:14px 16px 12px}
+.teams.fit .pip{height:10px}
 
 /* ---------- team panel ---------- */
 .tp{
@@ -1080,9 +1085,27 @@ const UI = {
     }
   },
 
+  /* Auto layout: once a round is live/over, only registered teams take part
+     (that's what FORCE_START does), so show just those, in one row. */
+  applyLayout(){
+    const host=document.getElementById('teams'), s=this.state;
+    const active=(s.round_state>=2)
+      ? (s.teams||[]).filter(t=>t.registered).map(t=>t.id)
+      : [1,2,3,4];
+    const n=active.length;
+    const fit = s.round_state>=2 && n>=2 && n<4;
+    for(let id=1;id<=4;id++){
+      this.panels[id].root.style.display = (fit && !active.includes(id)) ? 'none' : '';
+    }
+    host.classList.toggle('fit',fit);
+    host.classList.toggle('row',fit || this.layoutRow);
+    host.style.gridTemplateColumns = fit ? 'repeat('+n+',1fr)' : '';
+  },
+
   /* ---------- render ---------- */
   render(first){
     const s=this.state;
+    this.applyLayout();
     const byId={}; (s.teams||[]).forEach(t=>byId[t.id]=t);
 
     let alive=0,reg=0,winner=null;
@@ -1247,7 +1270,7 @@ const UI = {
     document.getElementById('bsound').classList.toggle('active',this.sound);
     this.toast(this.sound?'SOUND ON':'SOUND OFF','#27e6ff'); if(this.sound) Sfx.blip(); },
   toggleLayout(){ this.layoutRow=!this.layoutRow; store.set('mz_row',this.layoutRow);
-    document.getElementById('teams').classList.toggle('row',this.layoutRow);
+    this.applyLayout();
     document.getElementById('blayout').classList.toggle('active',this.layoutRow); },
   togglePerf(){ this.perf=!this.perf; store.set('mz_perf',this.perf);
     document.body.classList.toggle('perf',this.perf);

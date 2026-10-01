@@ -13,7 +13,7 @@ What this script does:
   2. Connects over USB Serial to an ESP32 flashed with participant_node.ino.
      ZERO code changes are needed on participant_node.ino!
   3. When it is your turn, you click the target team button (T2, T3, T4)
-     and click a grid cell (A-E, 1-5).
+     and click a grid cell (1-5 columns, 1-5 rows).
   4. Clicking the red ATTACK button transmits the attack string
      (e.g., "2 3 4\n") over Serial to the participant ESP32.
   5. The ESP32 sends the attack over ESP-NOW to Central, receives the feedback,
@@ -515,8 +515,8 @@ class VirtualTFTDisplay(tk.Tk):
                 self.canvas.create_rectangle(sx(gx), sy(gy), sx(gx + UI_CELL_SIZE), sy(gy + UI_CELL_SIZE),
                                             outline=COLOR_WHITE, width=1)
 
-        # Coordinate helper labels (A-E, 1-5)
-        for c, col_letter in enumerate(["A", "B", "C", "D", "E"]):
+        # Coordinate helper labels (1-5 columns, 1-5 rows)
+        for c, col_letter in enumerate(["1", "2", "3", "4", "5"]):
             gx = UI_GRID_X + c * UI_CELL_SIZE + (UI_CELL_SIZE // 2)
             self.canvas.create_text(sx(gx), sy(UI_GRID_Y - 8), text=col_letter, fill="#a0aec0", font=("Arial", int(7 * SCALE)))
         for r in range(GRID_SIZE):
