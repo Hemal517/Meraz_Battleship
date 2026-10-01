@@ -52,6 +52,26 @@
       a matching stored ship layout, they just reconnect normally.
       See the "STATE PERSISTENCE" section below.
 
+   4) DIAGONAL SHIPS
+      Ships may be horizontal, vertical, or diagonal (both directions).
+      The direction codes (ORIENT_*) and the validation live in
+      game_logic.h; the registration packet itself did not change.
+
+   WHERE THIS FILE FITS IN THE WHOLE SYSTEM
+       team boards  <--ESP-NOW-->  THIS FILE  <--USB serial-->  dashboard.py
+     - game_logic.h   (same folder) holds every rule: ship validation,
+                      registration, attacks, turn order. This file only
+                      does the radio, serial and flash-saving around it.
+                      central_logic_test.cpp tests that same header
+                      with no hardware.
+     - participant_node.ino / participant starters send the packets
+       this file receives; their packet structs must match the ones
+       below byte for byte.
+     - dashboard.py reads the JSON lines this file prints and sends
+       back START / FORCE_START / RESET / SKIP_TURN as text commands.
+       mock_central.py imitates this file so the dashboard can be
+       tested with no board at all.
+
    Target: ESP32 Arduino core 2.x and 3.x. The ESP-NOW receive callback
    signature actually changed between them (core 3.x added the
    esp_now_recv_info_t wrapper; core 2.x just passes the sender's MAC

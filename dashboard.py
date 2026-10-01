@@ -26,6 +26,14 @@ What this file does (and does NOT do):
     restarting this script and reloading the browser fetches a full
     state snapshot and picks the display back up.
 
+Where this file fits in the whole system:
+    central_node.ino --USB serial--> THIS FILE --browser--> projector
+  It talks to the real Central board, or to mock_central.py (a fake
+  Central for testing with no hardware). It does not talk to the team
+  boards at all. virtual_display.py is a separate tool for a team
+  board's screen and uses its own web port (5001), so both can run at
+  the same time on one laptop.
+
 Two things worth knowing about how it stays in sync with Central:
   1. Every action on Central (attack, registration, elimination, etc.)
      immediately streams a one-line JSON "event" message - that's what

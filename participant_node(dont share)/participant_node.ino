@@ -1,36 +1,57 @@
 /* =====================================================================
-   MERAZ BATTLESHIP - PARTICIPANT NODE
+   MERAZ BATTLESHIP - PARTICIPANT NODE (the organizers' reference version)
    =====================================================================
-   This is the SAME file uploaded to all 4 team ESP32s. The only thing
-   that changes between boards is the CONFIGURATION block just below -
-   team ID, team name, ship placement, and the Central's MAC address.
+   WHAT THIS FILE IS
+     The finished firmware for one team's ESP32 + touch display. The
+     SAME file goes on all 4 team boards; only the CONFIGURATION block
+     just below changes (team ID, team name, ships, Central's MAC).
+     (Participants who are building their own firmware use
+     participant_starter.ino + PARTICIPANT_GUIDE.md instead.)
 
-   What this board does:
-     1. Registers itself with the Central over ESP-NOW.
-     2. Listens for turn updates so it knows when it's this team's turn.
-     3. Lets the player pick a target team + coordinate and fires an
-        AttackPacket at the Central.
-     4. Shows the result (MISS / HIT / SUNK / INVALID) it gets back.
+   WHERE IT FITS IN THE WHOLE SYSTEM
+       this board  <--ESP-NOW radio-->  central_node.ino  <--USB-->  dashboard.py
+     Central (central_node.ino) is the only referee. This board NEVER
+     decides whether a shot is valid - it asks Central and shows the
+     answer. All real game rules live in game_logic.h on the Central side.
 
-   This board NEVER decides whether an attack is valid - it just asks
-   the Central and shows whatever answer comes back. All the real game
-   logic lives in central_node.ino.
+   FILES THIS SKETCH NEEDS
+     VirtualTFT.h    only when USE_VIRTUAL_DISPLAY is switched on (below)
+     NOTE: this file keeps its OWN copy of the constants and packet
+     structs (it does not include game_logic.h). They must stay
+     byte-for-byte identical to the ones in central_node.ino and
+     game_logic.h, or Central will ignore this board's packets.
 
-   The exact TFT model hasn't been picked yet, so the code is split
-   into three clearly separate layers:
-     - GAME LOGIC        (registration, turn tracking, attack requests)
-     - ESP-NOW COMMS      (sending/receiving packets)
-     - UI LAYER            (currently Serial-only "stub" functions -
-                            see the "UI LAYER" section near the bottom)
-   Once a TFT is chosen, only the UI LAYER functions need to be
-   rewritten - nothing above them needs to change.
+   WHAT THE BOARD DOES
+     1. Registers with Central (retrying until accepted).
+     2. Listens for turn updates so it knows when it is this team's turn.
+     3. On your turn: pick a target team, tap a cell, press ATTACK.
+     4. Shows the result (MISS / HIT / ELIMINATED / INVALID) from Central.
 
-   For testing before any TFT is wired up, type these into the Serial
-   Monitor (115200 baud):
+   HOW THE FILE IS ORGANISED (top to bottom)
+     CONFIGURATION            <- the only part you edit per board
+     TFT DISPLAY CONFIGURATION
+     PACKET STRUCTURES + CONSTANTS (must match Central)
+     ESP-NOW communication
+     SERIAL COMMANDS          <- typed test commands (see below)
+     UI LAYER                 <- everything that draws or reads touches
+
+   NO DISPLAY YET?
+     Uncomment  #define USE_VIRTUAL_DISPLAY  (near the includes). The
+     same UI then draws on a virtual screen in your browser through
+     virtual_display.py, and mouse clicks act as touches. Details are
+     in VirtualTFT.h. Comment it out again for the real TFT.
+
+   SERIAL COMMANDS (type into the Serial Monitor at 115200 baud;
+   with the virtual display, use the box on the virtual display page):
      CONFIG          - show this board's configuration
-     STATUS          - show registration/turn status
+     STATUS          - show registration / turn status
      HELP            - list commands
-     2 3 4           - manually send an attack: target team 2, x=3, y=4
+     2 3 4           - send an attack: target team 2, x=3, y=4
+     (virtual display only - walk through the screens WITHOUT Central:)
+     DEMO TURN       - show the "your turn" screen
+     DEMO WAIT       - show the "waiting for another team" screen
+     DEMO HIT / MISS / SUNK / INVALID - show a result banner
+     DEMO MSG        - show a message screen
    ===================================================================== */
 
 #include <WiFi.h>
@@ -38,8 +59,20 @@
 #include <esp_idf_version.h>
 #include <string.h>
 #include <stdio.h>
-#include <SPI.h>
-#include <TFT_eSPI.h>   // library: bollworm/Bodmer's TFT_eSPI - see the setup note below
+
+// ---------------------------------------------------------------------
+// NO DISPLAY YET? Uncomment the next line to run the exact same UI on a
+// virtual screen in your browser (see VirtualTFT.h and
+// virtual_display.py). Comment it out again for the real TFT.
+// ---------------------------------------------------------------------
+// #define USE_VIRTUAL_DISPLAY
+
+#ifdef USE_VIRTUAL_DISPLAY
+  #include "VirtualTFT.h"   // must be in the same folder as this sketch
+#else
+  #include <SPI.h>
+  #include <TFT_eSPI.h>     // library: bollworm/Bodmer's TFT_eSPI - see the setup note below
+#endif
 
 // =====================================================================
 // A couple of definitions the CONFIGURATION section below needs.
@@ -124,7 +157,11 @@ uint8_t centralMac[6] = {
 // board, then paste the 5 numbers it prints below.
 uint16_t touchCalData[5] = { 300, 3600, 300, 3600, 7 };  // PLACEHOLDER - replace per board
 
+#ifdef USE_VIRTUAL_DISPLAY
+VirtualTFT tft;
+#else
 TFT_eSPI tft = TFT_eSPI();
+#endif
 uint8_t opponentIds[3];  // the 3 team IDs that aren't MY_TEAM_ID, filled in by uiInit()
 
 // =====================================================================
@@ -248,6 +285,7 @@ void uiShowYourTurn();
 void uiShowWaiting(uint8_t currentTeam);
 void uiShowAttackResult(uint8_t targetTeam, uint8_t x, uint8_t y, uint8_t result);
 void uiTick();
+void uiRedraw();
 void uiPollTouch();
 void uiDrawYourTurn();
 void uiDrawWaiting(uint8_t currentTeam);
@@ -566,7 +604,7 @@ void handleTurnUpdate(TurnUpdatePacket *pkt) {
 }
 
 // =====================================================================
-// SERIAL COMMANDS (testing mode - stand-in for the TFT until it's picked)
+// SERIAL COMMANDS (typed test commands; they work alongside the touch UI)
 // =====================================================================
 
 void handleSerialInput() {
@@ -587,6 +625,40 @@ void handleSerialInput() {
 void processSerialCommand(String line) {
   line.trim();
   if (line.length() == 0) return;
+
+#ifdef USE_VIRTUAL_DISPLAY
+  // Messages from virtual_display.py (not typed by a person)
+  if (line.startsWith("@TOUCH ")) {
+    int tx, ty;
+    if (sscanf(line.c_str() + 7, "%d %d", &tx, &ty) == 2 && tx >= 0 && ty >= 0) {
+      tft.feedTouch((uint16_t)tx, (uint16_t)ty);
+    }
+    return;
+  }
+  if (line == "@REDRAW") { uiRedraw(); return; }
+
+  // DEMO commands: show UI screens without needing Central. These only
+  // exist in virtual-display builds, so the real firmware never has them.
+  String demo = line;
+  demo.toUpperCase();
+  if (demo.startsWith("DEMO")) {
+    if (demo == "DEMO TURN") {
+      roundState = STATE_RUNNING;
+      currentTurnTeam = MY_TEAM_ID;          // makes the touch handling active too
+      uiShowYourTurn();
+    } else if (demo == "DEMO WAIT") {
+      roundState = STATE_RUNNING;
+      currentTurnTeam = (MY_TEAM_ID % MAX_TEAMS) + 1;   // some other team
+      uiShowWaiting(currentTurnTeam);
+    } else if (demo == "DEMO HIT")     { uiShowAttackResult(opponentIds[0], 2, 3, RESULT_HIT); }
+    else if (demo == "DEMO MISS")      { uiShowAttackResult(opponentIds[0], 2, 3, RESULT_MISS); }
+    else if (demo == "DEMO SUNK")      { uiShowAttackResult(opponentIds[0], 2, 3, RESULT_SUNK); }
+    else if (demo == "DEMO INVALID")   { uiShowAttackResult(opponentIds[0], 2, 3, RESULT_INVALID); }
+    else if (demo == "DEMO MSG")       { uiShowMessage("Demo message"); }
+    else Serial.println("DEMO options: TURN, WAIT, HIT, MISS, SUNK, INVALID, MSG");
+    return;
+  }
+#endif
 
   String upper = line;
   upper.toUpperCase();
@@ -651,6 +723,9 @@ void printStatus() {
 
 void printHelp() {
   Serial.println("Commands: CONFIG, STATUS, HELP, or 'target x y' to attack (e.g. 2 3 4)");
+#ifdef USE_VIRTUAL_DISPLAY
+  Serial.println("Virtual display only: DEMO TURN | WAIT | HIT | MISS | SUNK | INVALID | MSG");
+#endif
 }
 
 const char *roundStateName(uint8_t s) {
@@ -701,6 +776,12 @@ unsigned long uiResultUntil = 0;   // while millis() < this, a result banner is 
 uint8_t uiPendingScreen = 0;       // 0 = none, 1 = your turn, 2 = waiting, 3 = message
 uint8_t uiPendingWaitingTeam = 0;
 char uiPendingMessage[40] = "";
+
+// The last full screen drawn, so uiRedraw() can repaint it on request
+// (used when the virtual display connects after the board is already running).
+uint8_t uiLastScreen = 0;          // 0 = none, 1 = your turn, 2 = waiting, 3 = message
+uint8_t uiLastWaitingTeam = 0;
+char uiLastMessage[40] = "";
 
 uint8_t uiSelTarget = 0;   // 0 = no target chosen yet
 int8_t uiSelX = -1, uiSelY = -1;  // -1 = no cell chosen yet
@@ -772,9 +853,24 @@ void uiTick() {
   if (yourTurnOnScreen) uiPollTouch();
 }
 
+// Repaint whatever full screen was last showing (no-op if none yet).
+void uiRedraw() {
+  if (uiLastScreen == 1) uiDrawYourTurn();
+  else if (uiLastScreen == 2) uiDrawWaiting(uiLastWaitingTeam);
+  else if (uiLastScreen == 3) {
+    char msg[40];
+    strncpy(msg, uiLastMessage, sizeof(msg));
+    msg[sizeof(msg) - 1] = '\0';
+    uiDrawMessage(msg);
+  }
+}
+
 // --- actual drawing ---
 
 void uiDrawMessage(const char *msg) {
+  uiLastScreen = 3;
+  strncpy(uiLastMessage, msg, sizeof(uiLastMessage) - 1);
+  uiLastMessage[sizeof(uiLastMessage) - 1] = '\0';
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
@@ -783,6 +879,8 @@ void uiDrawMessage(const char *msg) {
 }
 
 void uiDrawWaiting(uint8_t currentTeam) {
+  uiLastScreen = 2;
+  uiLastWaitingTeam = currentTeam;
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
@@ -820,6 +918,7 @@ void uiDrawResultBanner(uint8_t targetTeam, uint8_t x, uint8_t y, uint8_t result
 }
 
 void uiDrawYourTurn() {
+  uiLastScreen = 1;
   uiSelTarget = 0;
   uiSelX = -1;
   uiSelY = -1;
@@ -923,8 +1022,10 @@ void uiPollTouch() {
       attemptManualAttack(uiSelTarget, (uint8_t)uiSelX, (uint8_t)uiSelY);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
       tft.setTextSize(1);
-      tft.setCursor(10, UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H + 8);
-      tft.print("Sent - waiting for result...");
+      // Shown next to the "YOUR TURN" heading. (It used to be drawn below the
+      // ATTACK button, which is off the bottom of the 320-pixel screen.)
+      tft.setCursor(125, 12);
+      tft.print("Sent - waiting...");
     }
   }
 }

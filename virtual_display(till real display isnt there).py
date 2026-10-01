@@ -1,595 +1,441 @@
 """
-MERAZ BATTLESHIP - VIRTUAL TFT DISPLAY & HARDWARE BRIDGE
-=========================================================
-Run this on your laptop to simulate the 2.4" ILI9341 touch display:
-    python virtual_display.py
-Or with a specific port:
-    python virtual_display.py --port COM4 --team 1
+=====================================================================
+ virtual_display.py  -  a fake 2.4" TFT screen in your web browser
+=====================================================================
 
-What this script does:
-  1. Emulates the physical 240x320 ILI9341 TFT display down to the exact
-     pixel coordinates, button dimensions, colors, and timing defined in
-     participant_node.ino.
-  2. Connects over USB Serial to an ESP32 flashed with participant_node.ino.
-     ZERO code changes are needed on participant_node.ino!
-  3. When it is your turn, you click the target team button (T2, T3, T4)
-     and click a grid cell (A-E, 1-5).
-  4. Clicking the red ATTACK button transmits the attack string
-     (e.g., "2 3 4\n") over Serial to the participant ESP32.
-  5. The ESP32 sends the attack over ESP-NOW to Central, receives the feedback,
-     and logs the result back over Serial.
-  6. This script parses the result and displays the exact 1500ms full-screen
-     result banner (HIT = Orange, MISS = Blue, ELIMINATED = Red).
-  7. Includes a built-in "Simulation Mode" so you can test all screens and
-     clicks even without plugging in any hardware!
+WHY THIS EXISTS
+  Until the real touch displays arrive, you can still test the whole
+  participant UI. Flash participant_node.ino with
+      #define USE_VIRTUAL_DISPLAY
+  switched on. The board then sends its draw commands over the USB
+  cable instead of to a screen, and this script draws them on a
+  240x320 "screen" in your browser. Clicking the screen sends a touch
+  back to the board, exactly like a finger on the real panel.
+
+  The real UI code runs unchanged, so what you see here is the real
+  screen layout, the real button positions, and the real touch logic.
+
+HOW TO RUN
+  1. pip install flask pyserial
+  2. Flash a participant board with USE_VIRTUAL_DISPLAY enabled.
+  3. Close the Arduino Serial Monitor (only one program can use the
+     USB port at a time).
+  4. python virtual_display.py COM6          (your board's port)
+        optional second argument = web port, default 5001
+  5. Open http://localhost:5001 in your browser.
+
+  Testing several boards at once? Run one copy per board on different
+  web ports:   python virtual_display.py COM6 5001
+               python virtual_display.py COM7 5002
+
+WHAT IT DOES NOT TEST
+  Wiring, SPI speed, backlight, and touch calibration - those only
+  show up on the real display. Text shapes are also approximate.
+
+HOW IT WORKS (the wire format; same text is documented in VirtualTFT.h)
+  Board -> laptop, one line per draw call, each starting with "@TFT ":
+     @TFT INIT / F color / R x y w h color / r x y w h color
+     @TFT Q x y w h radius color / q x y w h radius color
+     @TFT T x y size fg bg text      (bg = -1 means transparent)
+  Laptop -> board:
+     @TOUCH x y      a tap at pixel (x, y)
+     @REDRAW         "repaint the screen you're showing"
+  Any other line the board prints is shown in the log panel.
+=====================================================================
 """
 
+import collections
+import json
+import queue
 import sys
-import time
 import threading
-import argparse
-import re
-import tkinter as tk
-from tkinter import ttk, messagebox
+import time
 
-try:
-    import serial
-    import serial.tools.list_ports
-    SERIAL_AVAILABLE = True
-except ImportError:
-    SERIAL_AVAILABLE = False
-
+import serial                                   # pip install pyserial
+from flask import Flask, Response, jsonify, request   # pip install flask
 
 # =====================================================================
-# EXACT CONSTANTS FROM participant_node.ino
+# CONFIGURATION  (you can also pass the port as the first argument)
 # =====================================================================
-BASE_WIDTH = 240
-BASE_HEIGHT = 320
-SCALE = 1.5  # 1.5x zoom -> 360x480 window for comfortable desktop viewing
+SERIAL_PORT = "COM6"      # the participant board's USB port
+BAUD_RATE = 115200        # must match Serial.begin() in the sketch
+WEB_PORT = 5001           # 5000 is taken by dashboard.py
+SCREEN_W, SCREEN_H = 240, 320
+DISPLAY_SCALE = 2         # browser pixels per screen pixel
+LOG_LINES_KEPT = 300
 
-UI_RESULT_DISPLAY_MS = 1500
+if len(sys.argv) > 1:
+    SERIAL_PORT = sys.argv[1]
+if len(sys.argv) > 2:
+    WEB_PORT = int(sys.argv[2])
 
-UI_TARGET_BTN_Y = 40
-UI_TARGET_BTN_H = 36
-UI_TARGET_BTN_W = 70
-UI_TARGET_GAP   = 10
+# =====================================================================
+# SHARED STATE (touched by the serial thread and the web handlers)
+# =====================================================================
+state_lock = threading.Lock()
+frame = []                                    # draw commands since the last full-screen clear
+log = collections.deque(maxlen=LOG_LINES_KEPT)   # recent non-draw lines from the board
+status = {"connected": False, "port": SERIAL_PORT, "error": ""}
+subscribers = []                              # one queue per open browser tab
+serial_port = None                            # the open pyserial object (or None)
+write_lock = threading.Lock()                 # only one writer to the port at a time
 
-UI_GRID_X       = 20
-UI_GRID_Y       = 90
-UI_CELL_SIZE    = 40
-GRID_SIZE       = 5
-
-UI_ATTACK_BTN_X = 70
-UI_ATTACK_BTN_Y = 292
-UI_ATTACK_BTN_W = 100
-UI_ATTACK_BTN_H = 26
-
-# Colors matching TFT_eSPI
-COLOR_BLACK     = "#000000"
-COLOR_WHITE     = "#FFFFFF"
-COLOR_NAVY      = "#000080"
-COLOR_YELLOW    = "#FFFF00"
-COLOR_GREEN     = "#00FF00"
-COLOR_BLUE      = "#0000FF"
-COLOR_ORANGE    = "#FFA500"
-COLOR_RED       = "#FF0000"
-COLOR_DARKGREY  = "#404040"
-COLOR_CYAN      = "#00FFFF"
+# How many numeric arguments each draw command carries (T is handled separately)
+NUMERIC_ARGS = {"F": 1, "R": 5, "r": 5, "Q": 6, "q": 6}
 
 
-def sx(val):
-    return int(val * SCALE)
-
-def sy(val):
-    return int(val * SCALE)
-
-
-class VirtualTFTDisplay(tk.Tk):
-    def __init__(self, default_port=None, default_team=1):
-        super().__init__()
-
-        self.title(f"Meraz Battleship - Virtual TFT (Team {default_team})")
-        self.resizable(False, False)
-        self.configure(bg="#121620")
-
-        self.my_team_id = default_team
-        self.my_team_name = f"TEAM {default_team}"
-        self.opponent_ids = [t for t in range(1, 5) if t != self.my_team_id]
-
-        # UI state
-        self.current_screen = "WAITING"   # WAITING, YOUR_TURN, BANNER, MESSAGE, GAMEOVER
-        self.pending_screen = None
-        self.waiting_team = 0
-        self.message_text = "Waiting for start..."
-        self.banner_info = None           # (target, x, y, result_str)
-        self.banner_expiry = 0
-
-        # Selection state
-        self.sel_target = 0
-        self.sel_x = -1
-        self.sel_y = -1
-        self.attack_in_flight = False
-
-        # Serial connection
-        self.serial_conn = None
-        self.serial_thread = None
-        self.running = True
-        self.default_port = default_port
-
-        self._create_widgets()
-        self._refresh_ports()
-
-        if default_port and SERIAL_AVAILABLE:
-            self.port_combo.set(default_port)
-            self.connect_serial()
-
-        # Start render & timer loop
-        self.after(50, self.update_timer)
-
-    def _create_widgets(self):
-        # --- Top Toolbar: COM port controls ---
-        top_bar = tk.Frame(self, bg="#1a202c", pady=6, padx=8)
-        top_bar.pack(fill=tk.X)
-
-        tk.Label(top_bar, text="COM Port:", bg="#1a202c", fg="#e2e8f0", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=3)
-        self.port_combo = ttk.Combobox(top_bar, width=9, values=[])
-        self.port_combo.pack(side=tk.LEFT, padx=3)
-
-        btn_refresh = tk.Button(top_bar, text="⟳", bg="#2d3748", fg="#e2e8f0", relief=tk.FLAT,
-                                command=self._refresh_ports, font=("Arial", 9, "bold"), padx=4)
-        btn_refresh.pack(side=tk.LEFT, padx=2)
-
-        self.btn_connect = tk.Button(top_bar, text="Connect", bg="#3182ce", fg="#ffffff", relief=tk.FLAT,
-                                     command=self.toggle_connection, font=("Arial", 9, "bold"), padx=6)
-        self.btn_connect.pack(side=tk.LEFT, padx=4)
-
-        self.lbl_status = tk.Label(top_bar, text="Disconnected", bg="#1a202c", fg="#e53e3e", font=("Arial", 9))
-        self.lbl_status.pack(side=tk.LEFT, padx=6)
-
-        # Team selector
-        tk.Label(top_bar, text="Team:", bg="#1a202c", fg="#e2e8f0", font=("Arial", 9, "bold")).pack(side=tk.RIGHT, padx=2)
-        self.team_spin = ttk.Spinbox(top_bar, from_=1, to=4, width=3, command=self._on_team_change)
-        self.team_spin.set(self.my_team_id)
-        self.team_spin.pack(side=tk.RIGHT, padx=4)
-
-        # --- Middle: TFT Canvas Frame (with realistic bezel) ---
-        bezel = tk.Frame(self, bg="#2a2e39", padx=10, pady=10)
-        bezel.pack(padx=12, pady=8)
-
-        # Sub-header label for physical display bezel
-        bezel_header = tk.Label(bezel, text="2.4\" TFT TOUCH (ILI9341 240x320)", bg="#2a2e39", fg="#718096", font=("Consolas", 8))
-        bezel_header.pack(anchor=tk.W, pady=(0, 4))
-
-        self.canvas = tk.Canvas(bezel, width=sx(BASE_WIDTH), height=sy(BASE_HEIGHT),
-                                bg=COLOR_BLACK, highlightthickness=1, highlightbackground="#4a5568")
-        self.canvas.pack()
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
-
-        # --- Bottom Toolbar: Simulation & Log Drawer ---
-        ctrl_bar = tk.Frame(self, bg="#1a202c", pady=6, padx=8)
-        ctrl_bar.pack(fill=tk.X)
-
-        tk.Label(ctrl_bar, text="Quick Test:", bg="#1a202c", fg="#a0aec0", font=("Arial", 8, "bold")).pack(side=tk.LEFT, padx=4)
-
-        btn_sim_turn = tk.Button(ctrl_bar, text="Your Turn", bg="#2b6cb0", fg="#fff", relief=tk.FLAT, font=("Arial", 8),
-                                 command=lambda: self.handle_line(">>> YOUR TURN <<<"))
-        btn_sim_turn.pack(side=tk.LEFT, padx=2)
-
-        btn_sim_wait = tk.Button(ctrl_bar, text="Waiting", bg="#4a5568", fg="#fff", relief=tk.FLAT, font=("Arial", 8),
-                                 command=lambda: self.handle_line("Waiting - it is TEAM 2's turn."))
-        btn_sim_wait.pack(side=tk.LEFT, padx=2)
-
-        btn_sim_hit = tk.Button(ctrl_bar, text="Hit", bg="#dd6b20", fg="#fff", relief=tk.FLAT, font=("Arial", 8),
-                                command=lambda: self.handle_line("RESULT: TEAM 2 (1,2) -> HIT"))
-        btn_sim_hit.pack(side=tk.LEFT, padx=2)
-
-        btn_sim_miss = tk.Button(ctrl_bar, text="Miss", bg="#3182ce", fg="#fff", relief=tk.FLAT, font=("Arial", 8),
-                                 command=lambda: self.handle_line("RESULT: TEAM 2 (0,0) -> MISS"))
-        btn_sim_miss.pack(side=tk.LEFT, padx=2)
-
-        btn_sim_sunk = tk.Button(ctrl_bar, text="Sunk", bg="#e53e3e", fg="#fff", relief=tk.FLAT, font=("Arial", 8),
-                                 command=lambda: self.handle_line("RESULT: TEAM 2 (4,4) -> HIT - TEAM 2 ELIMINATED!"))
-        btn_sim_sunk.pack(side=tk.LEFT, padx=2)
-
-        # Serial monitor expander
-        self.log_visible = tk.BooleanVar(value=False)
-        btn_log_toggle = tk.Checkbutton(ctrl_bar, text="Console", variable=self.log_visible,
-                                        bg="#1a202c", fg="#a0aec0", selectcolor="#2d3748",
-                                        command=self._toggle_log, font=("Arial", 8))
-        btn_log_toggle.pack(side=tk.RIGHT, padx=4)
-
-        # Log Text Box
-        self.log_frame = tk.Frame(self, bg="#0d1117", padx=4, pady=4)
-        self.log_text = tk.Text(self.log_frame, height=5, width=45, bg="#0d1117", fg="#58a6ff",
-                                font=("Consolas", 8), insertbackground="white")
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-
-    def _toggle_log(self):
-        if self.log_visible.get():
-            self.log_frame.pack(fill=tk.BOTH, padx=8, pady=(0, 6), expand=True)
-        else:
-            self.log_frame.pack_forget()
-
-    def _on_team_change(self):
+def broadcast(event):
+    """Send one event to every open browser tab (drops it if a tab is too slow)."""
+    for q in list(subscribers):
         try:
-            tid = int(self.team_spin.get())
-            if 1 <= tid <= 4:
-                self.my_team_id = tid
-                self.my_team_name = f"TEAM {tid}"
-                self.opponent_ids = [t for t in range(1, 5) if t != self.my_team_id]
-                self.title(f"Meraz Battleship - Virtual TFT (Team {tid})")
-                self.redraw()
-        except ValueError:
+            q.put_nowait(event)
+        except queue.Full:
             pass
 
-    def _refresh_ports(self):
-        if not SERIAL_AVAILABLE:
-            self.port_combo['values'] = ["No pyserial"]
-            return
-        ports = [p.device for p in serial.tools.list_ports.comports()]
-        self.port_combo['values'] = ports
-        if ports and not self.port_combo.get():
-            self.port_combo.set(ports[0])
 
-    def toggle_connection(self):
-        if self.serial_conn and self.serial_conn.is_open:
-            self.disconnect_serial()
-        else:
-            self.connect_serial()
-
-    def connect_serial(self):
-        if not SERIAL_AVAILABLE:
-            messagebox.showerror("Error", "pyserial is not installed. Install with: pip install pyserial")
-            return
-        port = self.port_combo.get()
-        if not port:
-            messagebox.showwarning("Warning", "Select a valid COM port first.")
-            return
-
-        try:
-            self.serial_conn = serial.Serial(port, 115200, timeout=0.1)
-            self.lbl_status.config(text=f"Connected ({port})", fg="#38a169")
-            self.btn_connect.config(text="Disconnect", bg="#e53e3e")
-            self.append_log(f"--- Connected to {port} at 115200 baud ---")
-
-            # Start background reader thread
-            self.serial_thread = threading.Thread(target=self._read_serial_loop, daemon=True)
-            self.serial_thread.start()
-
-            # Request config from board
-            self.after(500, lambda: self.send_serial_line("CONFIG"))
-        except Exception as e:
-            messagebox.showerror("Serial Connection Failed", str(e))
-            self.lbl_status.config(text="Error", fg="#e53e3e")
-
-    def disconnect_serial(self):
-        if self.serial_conn:
-            try:
-                self.serial_conn.close()
-            except Exception:
-                pass
-            self.serial_conn = None
-        self.lbl_status.config(text="Disconnected", fg="#e53e3e")
-        self.btn_connect.config(text="Connect", bg="#3182ce")
-        self.append_log("--- Disconnected ---")
-
-    def send_serial_line(self, line):
-        self.append_log(f">> {line}")
-        if self.serial_conn and self.serial_conn.is_open:
-            try:
-                self.serial_conn.write((line.strip() + "\n").encode("utf-8"))
-            except Exception as e:
-                self.append_log(f"[Write Error] {e}")
-
-    def append_log(self, text):
-        def _add():
-            self.log_text.insert(tk.END, text + "\n")
-            self.log_text.see(tk.END)
-        self.after(0, _add)
-
-    def _read_serial_loop(self):
-        buf = ""
-        while self.running and self.serial_conn and self.serial_conn.is_open:
-            try:
-                data = self.serial_conn.read(256).decode("utf-8", errors="ignore")
-                if data:
-                    buf += data
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        line = line.strip()
-                        if line:
-                            self.append_log(line)
-                            self.after(0, self.handle_line, line)
-            except Exception as e:
-                self.append_log(f"[Serial Read Error] {e}")
-                break
-            time.sleep(0.01)
-
-    # =====================================================================
-    # PARSE SERIAL MESSAGES FROM participant_node.ino
-    # =====================================================================
-    def handle_line(self, line):
-        line_clean = line.strip()
-
-        # Turn update: YOUR TURN
-        if ">>> YOUR TURN <<<" in line_clean:
-            self.show_your_turn()
-            return
-
-        # Turn update: Waiting for another team
-        m_wait = re.search(r"Waiting - it is TEAM (\d+)'s turn", line_clean, re.IGNORECASE)
-        if m_wait:
-            team_num = int(m_wait.group(1))
-            self.show_waiting(team_num)
-            return
-
-        # Turn update: Setup/Ready
-        if "Waiting for the organizer to start" in line_clean:
-            self.show_message("Waiting for start...")
-            return
-
-        # Game over
-        if "GAME OVER" in line_clean:
-            self.show_message("GAME OVER")
-            return
-
-        # Result Banner:
-        # e.g.: RESULT: TEAM 2 (3,4) -> HIT
-        # e.g.: RESULT: TEAM 2 (3,4) -> MISS
-        # e.g.: RESULT: TEAM 2 (3,4) -> HIT - TEAM 2 ELIMINATED!
-        # e.g.: RESULT: TEAM 2 (3,4) -> INVALID (rejected by Central)
-        m_res = re.search(r"RESULT:\s*TEAM\s*(\d+)\s*\((\d+),(\d+)\)\s*->\s*(.*)", line_clean, re.IGNORECASE)
-        if m_res:
-            target_id = int(m_res.group(1))
-            x = int(m_res.group(2))
-            y = int(m_res.group(3))
-            raw_res = m_res.group(4).upper()
-
-            if "ELIMINATED" in raw_res:
-                result_code = "ELIMINATED!"
-            elif "HIT" in raw_res:
-                result_code = "HIT"
-            elif "MISS" in raw_res:
-                result_code = "MISS"
-            else:
-                result_code = "INVALID"
-
-            self.show_result_banner(target_id, x, y, result_code)
-            return
-
-        # [UI] prefixes from participant firmware
-        if line_clean.startswith("[UI]"):
-            msg = line_clean[4:].strip()
-            self.show_message(msg)
-            return
-
-        # Config detection: auto-adjust team ID
-        m_cfg = re.search(r"MY_TEAM_ID:\s*(\d+)", line_clean)
-        if m_cfg:
-            self.my_team_id = int(m_cfg.group(1))
-            self.my_team_name = f"TEAM {self.my_team_id}"
-            self.opponent_ids = [t for t in range(1, 5) if t != self.my_team_id]
-            self.team_spin.set(self.my_team_id)
-            self.title(f"Meraz Battleship - Virtual TFT (Team {self.my_team_id})")
-            self.redraw()
-
-    # =====================================================================
-    # SCREEN STATE LOGIC
-    # =====================================================================
-    def show_message(self, msg):
-        now = time.time() * 1000
-        if now < self.banner_expiry:
-            self.pending_screen = ("MESSAGE", msg)
-            return
-        self.current_screen = "MESSAGE"
-        self.message_text = msg
-        self.redraw()
-
-    def show_waiting(self, current_team):
-        now = time.time() * 1000
-        if now < self.banner_expiry:
-            self.pending_screen = ("WAITING", current_team)
-            return
-        self.current_screen = "WAITING"
-        self.waiting_team = current_team
-        self.redraw()
-
-    def show_your_turn(self):
-        now = time.time() * 1000
-        if now < self.banner_expiry:
-            self.pending_screen = ("YOUR_TURN", None)
-            return
-        self.current_screen = "YOUR_TURN"
-        self.sel_target = 0
-        self.sel_x = -1
-        self.sel_y = -1
-        self.attack_in_flight = False
-        self.redraw()
-
-    def show_result_banner(self, target, x, y, result_str):
-        self.current_screen = "BANNER"
-        self.banner_info = (target, x, y, result_str)
-        self.banner_expiry = (time.time() * 1000) + UI_RESULT_DISPLAY_MS
-        self.redraw()
-
-    def update_timer(self):
-        now = time.time() * 1000
-        if self.current_screen == "BANNER" and now >= self.banner_expiry:
-            if self.pending_screen:
-                stype, sdata = self.pending_screen
-                self.pending_screen = None
-                if stype == "YOUR_TURN":
-                    self.show_your_turn()
-                elif stype == "WAITING":
-                    self.show_waiting(sdata)
-                elif stype == "MESSAGE":
-                    self.show_message(sdata)
-            else:
-                self.show_waiting(0)
-
-        self.after(50, self.update_timer)
-
-    # =====================================================================
-    # DRAWING FUNCTIONS (exact replica of participant_node.ino UI layer)
-    # =====================================================================
-    def redraw(self):
-        self.canvas.delete("all")
-
-        if self.current_screen == "BANNER" and self.banner_info:
-            target, x, y, res = self.banner_info
-            self._draw_result_banner(target, x, y, res)
-        elif self.current_screen == "YOUR_TURN":
-            self._draw_your_turn()
-        elif self.current_screen == "WAITING":
-            self._draw_waiting()
-        else:
-            self._draw_message()
-
-    def _draw_message(self):
-        # Black background with centered message
-        self.canvas.create_rectangle(0, 0, sx(BASE_WIDTH), sy(BASE_HEIGHT), fill=COLOR_BLACK, outline="")
-        self.canvas.create_text(sx(120), sy(150), text=self.message_text, fill=COLOR_WHITE,
-                                font=("Arial", int(14 * SCALE), "bold"), justify=tk.CENTER)
-
-    def _draw_waiting(self):
-        self.canvas.create_rectangle(0, 0, sx(BASE_WIDTH), sy(BASE_HEIGHT), fill=COLOR_BLACK, outline="")
-        self.canvas.create_text(sx(120), sy(135), text="Waiting for", fill=COLOR_WHITE,
-                                font=("Arial", int(14 * SCALE), "bold"))
-        tname = f"TEAM {self.waiting_team}" if self.waiting_team else "NEXT TURN"
-        self.canvas.create_text(sx(120), sy(165), text=tname, fill=COLOR_CYAN,
-                                font=("Arial", int(18 * SCALE), "bold"))
-
-    def _draw_result_banner(self, target, x, y, result_str):
-        # Color coding from uiDrawResultBanner()
-        if result_str == "MISS":
-            bg = COLOR_BLUE
-        elif result_str == "HIT":
-            bg = COLOR_ORANGE
-        elif result_str == "ELIMINATED!":
-            bg = COLOR_RED
-        else:
-            bg = COLOR_DARKGREY
-
-        self.canvas.create_rectangle(0, 0, sx(BASE_WIDTH), sy(BASE_HEIGHT), fill=bg, outline="")
-        self.canvas.create_text(sx(120), sy(120), text=result_str, fill=COLOR_WHITE,
-                                font=("Arial", int(22 * SCALE), "bold"))
-        self.canvas.create_text(sx(120), sy(165), text=f"TEAM {target} ({x},{y})", fill=COLOR_WHITE,
-                                font=("Arial", int(13 * SCALE), "bold"))
-
-    def _draw_your_turn(self):
-        self.canvas.create_rectangle(0, 0, sx(BASE_WIDTH), sy(BASE_HEIGHT), fill=COLOR_BLACK, outline="")
-
-        # Title: "YOUR TURN"
-        self.canvas.create_text(sx(10), sy(12), text="YOUR TURN", fill=COLOR_GREEN,
-                                font=("Arial", int(12 * SCALE), "bold"), anchor=tk.W)
-
-        # "Select target:"
-        self.canvas.create_text(sx(10), sy(28), text="Select target:", fill=COLOR_WHITE,
-                                font=("Arial", int(8 * SCALE)), anchor=tk.W)
-
-        # 3 Target Buttons
-        for i in range(3):
-            tid = self.opponent_ids[i]
-            bx = 5 + i * (UI_TARGET_BTN_W + UI_TARGET_GAP)
-            by = UI_TARGET_BTN_Y
-            selected = (self.sel_target == tid)
-
-            fill_c = COLOR_YELLOW if selected else COLOR_NAVY
-            text_c = COLOR_BLACK if selected else COLOR_WHITE
-
-            self.canvas.create_rectangle(sx(bx), sy(by), sx(bx + UI_TARGET_BTN_W), sy(by + UI_TARGET_BTN_H),
-                                        fill=fill_c, outline=COLOR_WHITE, width=1)
-            self.canvas.create_text(sx(bx + UI_TARGET_BTN_W // 2), sy(by + UI_TARGET_BTN_H // 2),
-                                    text=f"T{tid}", fill=text_c, font=("Arial", int(12 * SCALE), "bold"))
-
-        # 5x5 Grid
-        for r in range(GRID_SIZE):
-            for c in range(GRID_SIZE):
-                gx = UI_GRID_X + c * UI_CELL_SIZE
-                gy = UI_GRID_Y + r * UI_CELL_SIZE
-                is_sel = (self.sel_x == c and self.sel_y == r)
-
-                fill_c = COLOR_YELLOW if is_sel else COLOR_DARKGREY
-                self.canvas.create_rectangle(sx(gx + 1), sy(gy + 1), sx(gx + UI_CELL_SIZE - 1), sy(gy + UI_CELL_SIZE - 1),
-                                            fill=fill_c, outline="")
-                self.canvas.create_rectangle(sx(gx), sy(gy), sx(gx + UI_CELL_SIZE), sy(gy + UI_CELL_SIZE),
-                                            outline=COLOR_WHITE, width=1)
-
-        # Coordinate helper labels (A-E, 1-5)
-        for c, col_letter in enumerate(["A", "B", "C", "D", "E"]):
-            gx = UI_GRID_X + c * UI_CELL_SIZE + (UI_CELL_SIZE // 2)
-            self.canvas.create_text(sx(gx), sy(UI_GRID_Y - 8), text=col_letter, fill="#a0aec0", font=("Arial", int(7 * SCALE)))
-        for r in range(GRID_SIZE):
-            gy = UI_GRID_Y + r * UI_CELL_SIZE + (UI_CELL_SIZE // 2)
-            self.canvas.create_text(sx(UI_GRID_X - 10), sy(gy), text=str(r + 1), fill="#a0aec0", font=("Arial", int(7 * SCALE)))
-
-        # ATTACK button
-        ready = (self.sel_target != 0 and self.sel_x >= 0 and self.sel_y >= 0 and not self.attack_in_flight)
-        btn_color = COLOR_RED if ready else COLOR_DARKGREY
-
-        self.canvas.create_rectangle(sx(UI_ATTACK_BTN_X), sy(UI_ATTACK_BTN_Y),
-                                    sx(UI_ATTACK_BTN_X + UI_ATTACK_BTN_W), sy(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H),
-                                    fill=btn_color, outline=COLOR_WHITE, width=1)
-        self.canvas.create_text(sx(UI_ATTACK_BTN_X + UI_ATTACK_BTN_W // 2), sy(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H // 2),
-                                text="ATTACK", fill=COLOR_WHITE, font=("Arial", int(11 * SCALE), "bold"))
-
-        # In-flight message
-        if self.attack_in_flight:
-            self.canvas.create_text(sx(120), sy(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H + 12),
-                                    text="Sent - waiting for result...", fill=COLOR_WHITE, font=("Arial", int(8 * SCALE)))
-
-    # =====================================================================
-    # TOUCH / CLICK HANDLING
-    # =====================================================================
-    def on_canvas_click(self, event):
-        if self.current_screen != "YOUR_TURN":
-            return
-
-        # Convert back from scaled desktop coords to real 240x320 physical coords
-        px = event.x / SCALE
-        py = event.y / SCALE
-
-        # 1. Check if the user clicked one of the Target Team buttons (T2, T3, T4)
-        for i in range(3):
-            bx = 5 + i * (UI_TARGET_BTN_W + UI_TARGET_GAP)
-            by = UI_TARGET_BTN_Y
-            if bx <= px <= bx + UI_TARGET_BTN_W and by <= py <= by + UI_TARGET_BTN_H:
-                self.sel_target = self.opponent_ids[i]
-                self.redraw()
-                return
-
-        # 2. Check if the user clicked inside the 5x5 Grid cells
-        if UI_GRID_X <= px < UI_GRID_X + GRID_SIZE * UI_CELL_SIZE and UI_GRID_Y <= py < UI_GRID_Y + GRID_SIZE * UI_CELL_SIZE:
-            self.sel_x = int((px - UI_GRID_X) // UI_CELL_SIZE)
-            self.sel_y = int((py - UI_GRID_Y) // UI_CELL_SIZE)
-            self.redraw()
-            return
-
-        # 3. Check if the user clicked the big red ATTACK button
-        if UI_ATTACK_BTN_X <= px <= UI_ATTACK_BTN_X + UI_ATTACK_BTN_W and UI_ATTACK_BTN_Y <= py <= UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H:
-            # Only fire if they selected both a target and a coordinate
-            if self.sel_target != 0 and self.sel_x >= 0 and self.sel_y >= 0 and not self.attack_in_flight:
-                self.attack_in_flight = True
-                self.redraw()
-                
-                # Transmit over Serial to participant ESP32
-                cmd = f"{self.sel_target} {self.sel_x} {self.sel_y}"
-                self.send_serial_line(cmd)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Meraz Battleship - Virtual TFT Display")
-    parser.add_argument("--port", type=str, default=None, help="Serial port of participant ESP32 (e.g. COM4)")
-    parser.add_argument("--team", type=int, default=1, help="Team ID (1-4)")
-    args = parser.parse_args()
-
-    app = VirtualTFTDisplay(default_port=args.port, default_team=args.team)
+def parse_draw(rest):
+    """Turn the text after '@TFT ' into a command dict, or None if malformed."""
+    op, _, args = rest.partition(" ")
     try:
-        app.mainloop()
-    finally:
-        app.running = False
-        if app.serial_conn:
+        if op == "INIT":
+            return {"op": "INIT"}
+        if op == "T":
+            parts = args.split(" ", 5)          # x y size fg bg text(with spaces)
+            if len(parts) < 6:
+                return None
+            x, y, size, fg, bg = (int(v) for v in parts[:5])
+            return {"op": "T", "x": x, "y": y, "s": size, "fg": fg, "bg": bg, "text": parts[5]}
+        if op in NUMERIC_ARGS:
+            nums = [int(v) for v in args.split()]
+            if len(nums) != NUMERIC_ARGS[op]:
+                return None
+            if op == "F":
+                return {"op": "F", "c": nums[0]}
+            if op in ("R", "r"):
+                return {"op": op, "x": nums[0], "y": nums[1], "w": nums[2], "h": nums[3], "c": nums[4]}
+            return {"op": op, "x": nums[0], "y": nums[1], "w": nums[2], "h": nums[3],
+                    "r": nums[4], "c": nums[5]}
+    except ValueError:
+        return None          # a log line interleaved into a draw line, etc.
+    return None
+
+
+def handle_line(line):
+    """Process one line received from the board."""
+    line = line.strip()
+    if not line:
+        return
+    if line.startswith("@TFT "):
+        cmd = parse_draw(line[5:])
+        if cmd is None:
+            return                                   # silently drop corrupted draw lines
+        with state_lock:
+            if cmd["op"] in ("INIT", "F"):
+                frame.clear()                        # a full clear starts a fresh frame
+            if cmd["op"] != "INIT":
+                frame.append(cmd)
+        broadcast({"k": "draw", "c": cmd})
+    else:
+        with state_lock:
+            log.append(line)
+        broadcast({"k": "log", "t": line})
+
+
+def send_to_board(text):
+    """Write one line to the board. Returns (ok, message)."""
+    with write_lock:
+        if serial_port is None:
+            return False, "board not connected"
+        try:
+            serial_port.write((text + "\n").encode("utf-8"))
+            return True, "sent"
+        except (serial.SerialException, OSError) as exc:
+            return False, str(exc)
+
+
+def serial_loop():
+    """Background thread: connect to the board, read lines forever, reconnect on error."""
+    global serial_port
+    while True:
+        try:
+            port = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.2)
+        except (serial.SerialException, OSError) as exc:
+            with state_lock:
+                status.update(connected=False, error=str(exc))
+            broadcast({"k": "status", "s": dict(status)})
+            time.sleep(2)
+            continue
+
+        serial_port = port
+        with state_lock:
+            status.update(connected=True, error="")
+        broadcast({"k": "status", "s": dict(status)})
+        time.sleep(0.5)
+        send_to_board("@REDRAW")          # ask the board to repaint if it's already running
+
+        buf = b""
+        try:
+            while True:
+                chunk = port.read(256)
+                if not chunk:
+                    continue
+                buf += chunk
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    handle_line(raw.decode("utf-8", errors="replace"))
+        except (serial.SerialException, OSError) as exc:
+            with state_lock:
+                status.update(connected=False, error=str(exc))
+            broadcast({"k": "status", "s": dict(status)})
+        finally:
+            serial_port = None
             try:
-                app.serial_conn.close()
+                port.close()
             except Exception:
                 pass
+            time.sleep(1)
+
+
+# =====================================================================
+# WEB SERVER
+# =====================================================================
+app = Flask(__name__)
+
+
+@app.route("/")
+def index():
+    html = PAGE.replace("__SCALE__", str(DISPLAY_SCALE)).replace("__W__", str(SCREEN_W)) \
+               .replace("__H__", str(SCREEN_H))
+    return Response(html, mimetype="text/html")
+
+
+@app.route("/stream")
+def stream():
+    """Server-sent events: first the current screen, then live updates."""
+    q = queue.Queue(maxsize=2000)
+
+    def gen():
+        with state_lock:
+            snapshot = {"k": "snapshot", "frame": list(frame), "log": list(log), "s": dict(status)}
+            subscribers.append(q)
+        try:
+            yield "data: " + json.dumps(snapshot) + "\n\n"
+            while True:
+                try:
+                    yield "data: " + json.dumps(q.get(timeout=15)) + "\n\n"
+                except queue.Empty:
+                    yield ": keep-alive\n\n"
+        finally:
+            if q in subscribers:
+                subscribers.remove(q)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/api/state")
+def api_state():
+    """Plain-JSON snapshot (handy for debugging and tests)."""
+    with state_lock:
+        return jsonify({"frame": list(frame), "log": list(log), "status": dict(status)})
+
+
+@app.route("/touch", methods=["POST"])
+def touch():
+    """The browser reports a click; forward it to the board as a touch."""
+    data = request.get_json(silent=True) or {}
+    try:
+        x, y = int(data["x"]), int(data["y"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify(ok=False, message="need integer x and y"), 400
+    if not (0 <= x < SCREEN_W and 0 <= y < SCREEN_H):
+        return jsonify(ok=False, message="outside the screen"), 400
+    ok, msg = send_to_board("@TOUCH %d %d" % (x, y))
+    return jsonify(ok=ok, message=msg), (200 if ok else 503)
+
+
+@app.route("/cmd", methods=["POST"])
+def cmd():
+    """Send a typed Serial command (CONFIG, STATUS, '2 3 4', ...) to the board."""
+    text = ((request.get_json(silent=True) or {}).get("text") or "").strip()
+    if not text or len(text) > 80 or "\n" in text:
+        return jsonify(ok=False, message="empty or too long"), 400
+    ok, msg = send_to_board(text)
+    return jsonify(ok=ok, message=msg), (200 if ok else 503)
+
+
+@app.route("/redraw", methods=["POST"])
+def redraw():
+    ok, msg = send_to_board("@REDRAW")
+    return jsonify(ok=ok, message=msg), (200 if ok else 503)
+
+
+# =====================================================================
+# BROWSER PAGE
+# The "renderer" script is kept separate and self-contained so it can
+# be tested on its own (see the test notes in the README).
+# =====================================================================
+PAGE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Virtual TFT</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin:0; background:#0b1220; color:#cfe3ff; font-family:Segoe UI, Arial, sans-serif; }
+  .wrap { display:flex; gap:28px; padding:24px; flex-wrap:wrap; justify-content:center; }
+  .bezel { background:#1a1f2b; border-radius:18px; padding:16px; box-shadow:0 8px 30px #000a; }
+  .screen { position:relative; width:calc(__W__px * __SCALE__); height:calc(__H__px * __SCALE__); }
+  canvas { position:absolute; left:0; top:0; width:100%; height:100%; image-rendering:pixelated; }
+  #ov { pointer-events:none; }
+  #scr { cursor:pointer; background:#000; }
+  .side { width:420px; max-width:100%; }
+  h1 { font-size:18px; margin:0 0 6px; color:#7fd4ff; }
+  .chip { display:inline-block; padding:3px 10px; border-radius:99px; font-size:12px; margin-bottom:10px; }
+  .ok { background:#0d4d2b; color:#7dffb0; } .bad { background:#5a1620; color:#ff9aa8; }
+  #log { background:#070b14; border:1px solid #1d2a44; border-radius:8px; height:300px; overflow:auto;
+         padding:8px; font:12px/1.45 Consolas, Menlo, monospace; white-space:pre-wrap; }
+  .row { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  input { flex:1; min-width:140px; background:#0f1626; color:#cfe3ff; border:1px solid #27385c;
+          border-radius:6px; padding:7px; font:13px Consolas, monospace; }
+  button { background:#17315c; color:#cfe3ff; border:1px solid #2b4a82; border-radius:6px;
+           padding:7px 11px; cursor:pointer; } button:hover { background:#1f4380; }
+  p.hint { font-size:12px; color:#8aa3c8; margin:8px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bezel"><div class="screen">
+    <canvas id="scr" width="__W__" height="__H__"></canvas>
+    <canvas id="ov" width="__W__" height="__H__"></canvas>
+  </div></div>
+  <div class="side">
+    <h1>Virtual TFT &mdash; participant board</h1>
+    <span id="chip" class="chip bad">connecting&hellip;</span>
+    <div id="log"></div>
+    <div class="row">
+      <input id="cmd" placeholder="Serial command, e.g.  CONFIG   STATUS   2 3 4" maxlength="80">
+      <button id="send">Send</button>
+    </div>
+    <div class="row">
+      <button data-c="CONFIG">CONFIG</button><button data-c="STATUS">STATUS</button>
+      <button data-c="HELP">HELP</button><button id="redraw">Repaint screen</button>
+    </div>
+    <p class="hint">Click the screen to tap it. Everything the board prints appears in the log above.</p>
+  </div>
+</div>
+
+<script id="renderer">
+// ---- renderer: turns draw commands into pixels (no page dependencies) ----
+function rgb565(c) {
+  var r = ((c >> 11) & 31) * 255 / 31, g = ((c >> 5) & 63) * 255 / 63, b = (c & 31) * 255 / 31;
+  return "rgb(" + Math.round(r) + "," + Math.round(g) + "," + Math.round(b) + ")";
+}
+function roundRectPath(ctx, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function applyCmd(ctx, m) {
+  switch (m.op) {
+    case "F": ctx.fillStyle = rgb565(m.c); ctx.fillRect(0, 0, 240, 320); break;
+    case "R": ctx.fillStyle = rgb565(m.c); ctx.fillRect(m.x, m.y, m.w, m.h); break;
+    case "r": ctx.strokeStyle = rgb565(m.c); ctx.lineWidth = 1;
+              ctx.strokeRect(m.x + 0.5, m.y + 0.5, m.w - 1, m.h - 1); break;
+    case "Q": ctx.fillStyle = rgb565(m.c); roundRectPath(ctx, m.x, m.y, m.w, m.h, m.r); ctx.fill(); break;
+    case "q": ctx.strokeStyle = rgb565(m.c); ctx.lineWidth = 1;
+              roundRectPath(ctx, m.x + 0.5, m.y + 0.5, m.w - 1, m.h - 1, m.r); ctx.stroke(); break;
+    case "T": {
+      var cw = 6 * m.s, ch = 8 * m.s, n = m.text.length;
+      if (m.bg >= 0) { ctx.fillStyle = rgb565(m.bg); ctx.fillRect(m.x, m.y, cw * n, ch); }
+      ctx.fillStyle = rgb565(m.fg);
+      ctx.font = "bold " + (7 * m.s) + "px Consolas, Menlo, monospace";
+      ctx.textBaseline = "top"; ctx.textAlign = "center";
+      for (var i = 0; i < n; i++) ctx.fillText(m.text[i], m.x + i * cw + cw / 2, m.y);
+      break;
+    }
+  }
+}
+function renderFrame(ctx, frame) {
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 240, 320);
+  for (var i = 0; i < frame.length; i++) applyCmd(ctx, frame[i]);
+}
+</script>
+
+<script>
+var scr = document.getElementById("scr"), ctx = scr.getContext("2d");
+var ov = document.getElementById("ov").getContext("2d");
+var logEl = document.getElementById("log"), chip = document.getElementById("chip");
+
+function addLog(t) {
+  logEl.textContent += t + "\n";
+  if (logEl.textContent.length > 20000) logEl.textContent = logEl.textContent.slice(-15000);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setStatus(s) {
+  chip.textContent = s.connected ? "connected to " + s.port : "not connected" + (s.error ? ": " + s.error : "");
+  chip.className = "chip " + (s.connected ? "ok" : "bad");
+}
+
+var es = new EventSource("/stream");
+es.onmessage = function (e) {
+  var m = JSON.parse(e.data);
+  if (m.k === "snapshot") {
+    renderFrame(ctx, m.frame); logEl.textContent = ""; m.log.forEach(addLog); setStatus(m.s);
+  } else if (m.k === "draw") {
+    if (m.c.op === "INIT") { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 240, 320); }
+    else applyCmd(ctx, m.c);
+  } else if (m.k === "log") addLog(m.t);
+  else if (m.k === "status") setStatus(m.s);
+};
+
+function post(url, body) {
+  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); });
+}
+
+scr.addEventListener("click", function (e) {
+  var rect = scr.getBoundingClientRect();
+  var x = Math.floor((e.clientX - rect.left) * 240 / rect.width);
+  var y = Math.floor((e.clientY - rect.top) * 320 / rect.height);
+  ov.clearRect(0, 0, 240, 320);
+  ov.strokeStyle = "rgba(255,255,255,0.9)"; ov.lineWidth = 2;
+  ov.beginPath(); ov.arc(x, y, 9, 0, 6.3); ov.stroke();
+  setTimeout(function () { ov.clearRect(0, 0, 240, 320); }, 250);
+  post("/touch", { x: x, y: y }).then(function (r) { if (!r.ok) addLog("[touch failed] " + r.message); });
+});
+
+function sendCmd(t) {
+  if (!t) return;
+  addLog("> " + t);
+  post("/cmd", { text: t }).then(function (r) { if (!r.ok) addLog("[send failed] " + r.message); });
+}
+document.getElementById("send").onclick = function () {
+  var i = document.getElementById("cmd"); sendCmd(i.value.trim()); i.value = "";
+};
+document.getElementById("cmd").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") document.getElementById("send").click();
+});
+Array.prototype.forEach.call(document.querySelectorAll("button[data-c]"), function (b) {
+  b.onclick = function () { sendCmd(b.getAttribute("data-c")); };
+});
+document.getElementById("redraw").onclick = function () { post("/redraw"); };
+</script>
+</body>
+</html>
+"""
+
+# =====================================================================
+# MAIN
+# =====================================================================
+if __name__ == "__main__":
+    threading.Thread(target=serial_loop, daemon=True).start()
+    print("Virtual display for the board on %s  ->  http://localhost:%d" % (SERIAL_PORT, WEB_PORT))
+    print("(Press Ctrl+C to stop. If the page says 'not connected', check the port name and")
+    print(" that the Arduino Serial Monitor is closed.)")
+    app.run(host="0.0.0.0", port=WEB_PORT, threaded=True, debug=False)

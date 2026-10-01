@@ -8,6 +8,12 @@ newline-delimited JSON ({"type":"state",...} / {"type":"event",...})
 out, and plain-text commands (GET_STATE/START/FORCE_START/RESET/
 SKIP_TURN) in.
 
+Where this file fits: it replaces central_node.ino in the chain
+    mock_central.py --(virtual serial pair)--> dashboard.py --> browser
+so dashboard.py can be tested with no ESP32 at all. It does NOT talk to
+team boards - to test a board's screen use virtual_display.py (needs
+a real ESP32 flashed with participant_node.ino).
+
 WHAT IT DOES ON ITS OWN, so you can just watch the dashboard:
   1. Registers all 4 teams, a couple seconds apart.
   2. Waits for you to click START on the dashboard - or auto-starts
