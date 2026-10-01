@@ -26,7 +26,7 @@ HOW TO RUN
 
   Testing several boards at once? Run one copy per board on different
   web ports:   python virtual_display.py COM6 5001
-               python virtual_display.py COM7 5002
+                python virtual_display.py COM7 5002
 
 WHAT IT DOES NOT TEST
   Wiring, SPI speed, backlight, and touch calibration - those only
@@ -57,7 +57,7 @@ from flask import Flask, Response, jsonify, request   # pip install flask
 # =====================================================================
 # CONFIGURATION  (you can also pass the port as the first argument)
 # =====================================================================
-SERIAL_PORT = "COM6"      # the participant board's USB port
+SERIAL_PORT = "COM7"      # the participant board's USB port
 BAUD_RATE = 115200        # must match Serial.begin() in the sketch
 WEB_PORT = 5001           # 5000 is taken by dashboard.py
 SCREEN_W, SCREEN_H = 240, 320

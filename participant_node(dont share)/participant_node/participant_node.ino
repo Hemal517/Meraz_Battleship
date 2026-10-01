@@ -65,7 +65,7 @@
 // virtual screen in your browser (see VirtualTFT.h and
 // virtual_display.py). Comment it out again for the real TFT.
 // ---------------------------------------------------------------------
-// #define USE_VIRTUAL_DISPLAY
+ #define USE_VIRTUAL_DISPLAY
 
 #ifdef USE_VIRTUAL_DISPLAY
   #include "VirtualTFT.h"   // must be in the same folder as this sketch
@@ -98,8 +98,8 @@ typedef struct __attribute__((packed)) {
 // =====================================================================
 // This is the ONLY section that should differ between the 4 boards.
 
-#define MY_TEAM_ID 1
-const char *MY_TEAM_NAME = "TEAM 1";
+#define MY_TEAM_ID 2
+const char *MY_TEAM_NAME = "TRI2";
 
 // Your 3 ships. Grid is 5x5, x = column (0-4), y = row (0-4).
 // Rules: exactly one ship of length 1, one of length 3, one of length
@@ -123,7 +123,7 @@ ShipPlacement myShips[3] = {
 // TODO: replace with the Central ESP32's real MAC address.
 // The Central prints its own MAC on boot - copy it from there.
 uint8_t centralMac[6] = {
-  0xA4, 0xCF, 0x12, 0x00, 0x00, 0x00
+  0xA0, 0xB7, 0x65, 0x0E, 0xF7, 0xAC
 };
 
 // All 5 boards (Central + 4 participants) must use the SAME channel.
@@ -155,6 +155,9 @@ uint8_t centralMac[6] = {
 // calibrated individually): run the TFT_eSPI example sketch at
 // File > Examples > TFT_eSPI > Generic > Touch_calibrate on THIS
 // board, then paste the 5 numbers it prints below.
+#if !defined(USE_VIRTUAL_DISPLAY) && !defined(TOUCH_CS)
+  #warning "TOUCH_CS is not defined in TFT_eSPI's User_Setup.h - touch will be disabled. Add: #define TOUCH_CS 15"
+#endif
 uint16_t touchCalData[5] = { 300, 3600, 300, 3600, 7 };  // PLACEHOLDER - replace per board
 
 #ifdef USE_VIRTUAL_DISPLAY
@@ -260,7 +263,13 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 #else
 void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len);
 #endif
+// The send callback changed too, but LATER than the receive one: it only
+// switched to wifi_tx_info_t in IDF 5.5 (Arduino-ESP32 core 3.3.x).
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
+#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+#endif
 void processPacket(const uint8_t *data, int len);
 
 bool localValidateShips(ShipPlacement ships[3]);
@@ -387,7 +396,11 @@ void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len) 
   pendingTail = next;
 }
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
+#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+#endif
   if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("WARNING: an ESP-NOW send to Central failed.");
   }
@@ -796,7 +809,15 @@ void computeOpponentIds() {
 void uiInit() {
   tft.init();
   tft.setRotation(0);  // portrait - change to 2 if mounted upside down
+#ifndef USE_VIRTUAL_DISPLAY
+  #ifdef TOUCH_CS
   tft.setTouch(touchCalData);
+  #else
+  Serial.println("WARNING: TOUCH_CS is not defined in TFT_eSPI's User_Setup.h - touch is DISABLED.");
+  #endif
+#else
+  tft.setTouch(touchCalData);
+#endif
   tft.fillScreen(TFT_BLACK);
   computeOpponentIds();
 }
@@ -985,7 +1006,11 @@ void drawAttackButton(bool enabled) {
 
 void uiPollTouch() {
   uint16_t tx, ty;
+#if defined(USE_VIRTUAL_DISPLAY) || defined(TOUCH_CS)
   if (!tft.getTouch(&tx, &ty)) return;
+#else
+  return;  // touch not compiled into TFT_eSPI - see the TOUCH_CS note above
+#endif
 
   static unsigned long lastTouchMillis = 0;
   if (millis() - lastTouchMillis < 250) return;  // simple debounce

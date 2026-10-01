@@ -28,11 +28,61 @@ import time
 from flask import Flask, Response, jsonify, request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+DASHBOARD_PY = os.path.join(HERE, "dashboard.py")
 
-# ---- pull the UI straight out of dashboard.py (single source of truth) ----
-with open(os.path.join(HERE, "dashboard.py"), encoding="utf-8") as f:
-    _src = f.read()
-DASHBOARD_HTML = re.search(r'DASHBOARD_HTML = r"""(.*?)"""\n', _src, re.S).group(1)
+
+def load_dashboard_html(path):
+    # Pull DASHBOARD_HTML out of dashboard.py without importing it: importing
+    # would drag in pyserial and try to open a COM port. We read the source as
+    # text instead, tolerating an r/b/u/f prefix or none, any spacing around
+    # the '=', either triple-quote style, CRLF, a BOM, and the string ending
+    # at end-of-file with no trailing newline.
+    if not os.path.exists(path):
+        raise SystemExit(
+            "\n  Cannot find dashboard.py next to this script."
+            "\n  Looked in: " + path +
+            "\n  Put simulate.py in the same folder as dashboard.py and run it from there.\n"
+        )
+
+    # utf-8-sig transparently strips a BOM if Notepad or VS Code added one
+    with open(path, encoding="utf-8-sig") as f:
+        src = f.read()
+
+    m = re.search(r"DASHBOARD_HTML\s*=\s*[rRbBuUfF]*(\"\"\"|''')", src)
+    if not m:
+        hits = [
+            "      line %d: %s" % (i, line.strip()[:72])
+            for i, line in enumerate(src.splitlines(), 1)
+            if "DASHBOARD_HTML" in line
+        ]
+        detail = "\n".join(hits) if hits else "      (the name does not appear in the file at all)"
+        raise SystemExit(
+            "\n  Could not find the DASHBOARD_HTML string in " + os.path.basename(path) + "."
+            "\n  Lines mentioning DASHBOARD_HTML:\n" + detail +
+            "\n\n  Expected a line like:  DASHBOARD_HTML = r<triple-quote><!DOCTYPE html> ..."
+            "\n  If your dashboard.py is an older copy, use the v2.3 file.\n"
+        )
+
+    quote = m.group(1)
+    start = m.end()
+    end = src.find(quote, start)
+    if end == -1:
+        raise SystemExit(
+            "\n  Found the start of DASHBOARD_HTML in " + os.path.basename(path) +
+            " but never its\n  closing quotes. The file looks truncated - re-download it.\n"
+        )
+
+    html = src[start:end]
+    if "<!DOCTYPE html" not in html[:200] or len(html) < 1000:
+        print(
+            "  WARNING: extracted %d characters but it does not look like the dashboard\n"
+            "           page. Check that dashboard.py is the right file." % len(html)
+        )
+    return html
+
+
+DASHBOARD_HTML = load_dashboard_html(DASHBOARD_PY)
+print("  UI loaded from %s (%s chars)" % (os.path.basename(DASHBOARD_PY), format(len(DASHBOARD_HTML), ",")))
 
 TEAM_NAMES = ["CIRCUIT BREAKERS", "OHM RAIDERS", "FLUX CAPACITORS", "NULL POINTERS"]
 # cells are named R<row> C<col> - both axes are numbered in the UI

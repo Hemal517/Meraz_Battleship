@@ -10,12 +10,6 @@
    (both discussed with the organizer before writing this file):
 
    1) REGISTRATION PACKET FORMAT
-      The original idea was to send the whole 5x5 ship grid over
-      ESP-NOW. The problem: since ships are ALLOWED to touch each
-      other (see spec), a raw grid of 9 filled cells can be ambiguous
-      - there can be more than one way (or no valid way) to split a
-      blob of touching cells back into "one size-1, one size-3, one
-      size-5" ship. That makes validation unreliable.
       FIX: participants send 3 explicit ship placements instead
       (length, start X, start Y, orientation). Central builds the
       grid itself from that - no guessing required, and the config
@@ -40,7 +34,7 @@
    boards after every move, and a SKIP_TURN serial command as a
    manual override if a board goes offline mid-turn.
 
-   3) POWER-LOSS PROTECTION (added while waiting on hardware)
+   3) POWER-LOSS PROTECTION 
       The game state used to live only in RAM, so a Central power
       blip mid-round would silently wipe the whole match. Now every
       action that changes the state (registration, attack, start,
@@ -72,12 +66,6 @@
        mock_central.py imitates this file so the dashboard can be
        tested with no board at all.
 
-   Target: ESP32 Arduino core 2.x and 3.x. The ESP-NOW receive callback
-   signature actually changed between them (core 3.x added the
-   esp_now_recv_info_t wrapper; core 2.x just passes the sender's MAC
-   directly), so OnDataRecv() below is compiled differently for each
-   using ESP_IDF_VERSION_MAJOR - both versions are handled, you don't
-   need to know or care which one is installed.
    ===================================================================== */
 
 #include <WiFi.h>
@@ -99,8 +87,8 @@
 // See the setup instructions for how to read a board's MAC address.
 // Order matters: index 0 = Team 1, index 1 = Team 2, etc.
 uint8_t participantMacs[4][6] = {
-  { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x01 },  // TEAM 1 - CHANGE ME
-  { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x02 },  // TEAM 2 - CHANGE ME
+  { 0x3C, 0x8A, 0x1F, 0x5D, 0x55, 0x5C },  // TEAM 1 - CHANGE ME
+  { 0x6C, 0xC8, 0X40, 0x88, 0x00, 0x8C },  // TEAM 2 - CHANGE ME
   { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x03 },  // TEAM 3 - CHANGE ME
   { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x04 },  // TEAM 4 - CHANGE ME
 };
@@ -222,7 +210,14 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 #else
 void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len);
 #endif
+
+// The send callback changed too, but LATER than the receive one: it only
+// switched to wifi_tx_info_t in IDF 5.5 (Arduino-ESP32 core 3.3.x).
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
+#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
+#endif
 void processPacket(const uint8_t *mac, const uint8_t *data, int len);
 
 int  getTeamIDFromMAC(const uint8_t *mac);
@@ -330,7 +325,11 @@ void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len) 
   pendingTail = next;
 }
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+void OnDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
+#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+#endif
   if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("WARNING: an ESP-NOW send failed to reach a peer.");
   }

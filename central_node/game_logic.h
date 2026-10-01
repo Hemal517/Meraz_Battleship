@@ -11,12 +11,6 @@
    this and calls into it from handleRegistration()/handleAttack()/
    cmdSkipTurn() - it's the ONE place those rules are written down.
 
-   Because it's plain, portable C++ (just <cstdint>/<cstring>), this
-   exact same file also compiles on a regular PC with g++. That's what
-   central_logic_test.cpp (the desktop test harness) uses it for - so
-   when that harness passes, it's testing these exact rules, not a
-   hand-copied approximation of them.
-
    Keep this file in the same folder as central_node.ino (Arduino IDE
    will show it as a second tab automatically), and in the same folder
    as central_logic_test.cpp when compiling the test harness.
