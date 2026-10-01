@@ -51,6 +51,13 @@
       until acknowledged, so once Central reboots and comes back with
       a matching stored ship layout, they just reconnect normally.
       See the "STATE PERSISTENCE" section below.
+
+   Target: ESP32 Arduino core 2.x and 3.x. The ESP-NOW receive callback
+   signature actually changed between them (core 3.x added the
+   esp_now_recv_info_t wrapper; core 2.x just passes the sender's MAC
+   directly), so OnDataRecv() below is compiled differently for each
+   using ESP_IDF_VERSION_MAJOR - both versions are handled, you don't
+   need to know or care which one is installed.
    ===================================================================== */
 
 #include <WiFi.h>
@@ -72,7 +79,7 @@
 // See the setup instructions for how to read a board's MAC address.
 // Order matters: index 0 = Team 1, index 1 = Team 2, etc.
 uint8_t participantMacs[4][6] = {
-  { 0x6C, 0xC8, 0x40, 0x88, 0x00, 0x8C },  // TEAM 1 - CHANGE ME
+  { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x01 },  // TEAM 1 - CHANGE ME
   { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x02 },  // TEAM 2 - CHANGE ME
   { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x03 },  // TEAM 3 - CHANGE ME
   { 0xA4, 0xCF, 0x12, 0x00, 0x00, 0x04 },  // TEAM 4 - CHANGE ME
@@ -195,11 +202,7 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 #else
 void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len);
 #endif
-#if ESP_IDF_VERSION_MAJOR >= 5
-void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
-#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
-#endif
 void processPacket(const uint8_t *mac, const uint8_t *data, int len);
 
 int  getTeamIDFromMAC(const uint8_t *mac);
@@ -277,14 +280,12 @@ void setup() {
 
 void loop() {
   // Drain packets that arrived via ESP-NOW since the last loop().
-  // We process them here in the main loop to keep the ESP-NOW callback fast and safe.
   while (pendingHead != pendingTail) {
     PendingPacket p = pendingQueue[pendingHead];
     pendingHead = (pendingHead + 1) % PENDING_QUEUE_SIZE;
-    processPacket(p.mac, p.data, p.len); // Figure out if it's an attack or registration
+    processPacket(p.mac, p.data, p.len);
   }
 
-  // Check for any commands sent from the Python dashboard over the USB cable (like START, RESET)
   handleSerialInput();
 }
 
@@ -309,23 +310,11 @@ void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len) 
   pendingTail = next;
 }
 
-#if ESP_IDF_VERSION_MAJOR >= 5
-
-void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.println("WARNING: an ESP-NOW send failed to reach a peer.");
-  }
-}
-
-#else
-
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("WARNING: an ESP-NOW send failed to reach a peer.");
   }
 }
-
-#endif
 
 // =====================================================================
 // PACKET ROUTING (by length - see note at top of file)
@@ -367,25 +356,22 @@ int getTeamIDFromMAC(const uint8_t *mac) {
 // the result into the right RegAckPacket + log line + broadcast/save.
 
 void handleRegistration(const uint8_t *mac, RegistrationPacket *pkt) {
-  // 1. Identify which team is trying to register using their hardware MAC address
   int macTeam = getTeamIDFromMAC(mac);
   if (macTeam == -1) {
     Serial.println("Registration from an unrecognized MAC - ignored.");
     return;  // we never added this MAC as a peer, so we can't reply anyway
   }
 
-  // 2. Validate their ship placement (Do they overlap? Are they out of bounds?)
   uint8_t result = tryRegister(macTeam, pkt->team_id, pkt->team_name, pkt->ships,
                                 roundState, registered, teamNames, storedShips, grid,
                                 remainingShips, eliminated);
 
-  // 3. Reply to the participant node and log the event based on validation result
   switch (result) {
     case REG_OK:
       addLog("TEAM %d (%s) registered", macTeam, teamNames[macTeam - 1]);
-      sendRegAck(mac, REG_OK);   // Send Success confirmation back to participant
-      broadcastTurnUpdate();     // Update all screens to show they joined
-      saveGameState();           // Save the new state to flash memory
+      sendRegAck(mac, REG_OK);
+      broadcastTurnUpdate();
+      saveGameState();
       break;
 
     case REG_RECONNECTED:
@@ -437,14 +423,12 @@ void sendRegAck(const uint8_t *mac, uint8_t status) {
 // =====================================================================
 
 void handleAttack(const uint8_t *mac, AttackPacket *pkt) {
-  // 1. Identify who fired the torpedo based on their hardware MAC address
   int macTeam = getTeamIDFromMAC(mac);
   if (macTeam == -1) {
     Serial.println("Attack from an unrecognized MAC - ignored.");
     return;
   }
 
-  // 2. Validate the attack (Is it their turn? Is the target alive? Is the game running?)
   uint8_t previousRoundState = roundState;
   uint8_t result = tryAttack(macTeam, pkt->attacker_id, pkt->target_id, pkt->x, pkt->y,
                               roundState, currentTurnIndex, grid, remainingShips,
@@ -452,15 +436,14 @@ void handleAttack(const uint8_t *mac, AttackPacket *pkt) {
 
   int targetId = pkt->target_id, x = pkt->x, y = pkt->y;
 
-  // 3. Process the result of the attack (Hit, Miss, Sunk, or Invalid)
   switch (result) {
     case RESULT_MISS:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - MISS", macTeam, targetId, x, y);
-      sendFeedback(mac, targetId, x, y, RESULT_MISS); // Tell the participant they missed
+      sendFeedback(mac, targetId, x, y, RESULT_MISS);
       break;
     case RESULT_HIT:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - HIT", macTeam, targetId, x, y);
-      sendFeedback(mac, targetId, x, y, RESULT_HIT); // Tell the participant they hit a ship
+      sendFeedback(mac, targetId, x, y, RESULT_HIT);
       break;
     case RESULT_SUNK:
       addLog("TEAM %d attacked TEAM %d at (%d,%d) - HIT, TEAM %d ELIMINATED",

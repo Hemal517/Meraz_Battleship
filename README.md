@@ -1,199 +1,216 @@
 # Meraz Battleship — Setup, Testing & Reference Guide
 
-4-team Battleship system for Meraz college fest (Electronics Club).
-Built with 5 ESP32 dev boards (1 Central game server + 4 Participant nodes with 2.4" SPI touch displays) and a projector Command Deck dashboard.
-
----
-
-## 📁 Repository File Structure
-
-```text
-├── central_node/
-│   ├── central_node.ino          # Authoritative game server firmware (USB Serial + ESP-NOW)
-│   └── game_logic.h              # Pure C++ battleship rules (validation, turns, eliminations)
-├── participant_node/
-│   └── participant_node.ino      # Participant node firmware for all 4 teams (TFT + Serial)
-├── match_logs/
-│   └── .gitkeep                  # Auto-generated plain-text match logs saved per round
-├── dashboard.py                  # Projector Command Deck (Flask + Server-Sent Events)
-├── simulate_dashboard.py         # Offline rehearsal server (run dashboard with ZERO hardware)
-├── virtual_display.py            # Virtual 2.4" ILI9341 touch display & USB hardware bridge
-├── mock_central.py               # Mock Central ESP32 over Serial for end-to-end rehearsal
-├── central_logic_test.cpp        # Desktop C++ test suite (verifies all 52 game rules)
-├── .gitignore                    # Ignores __pycache__, .pyc, and generated match logs
-└── README.md                     # This manual
-```
+Companion doc to `central_node.ino`, `participant_node.ino`, and
+`dashboard.py`. Covers hardware, wiring up all 5 boards, a full test
+plan, troubleshooting, and what's left for V2.
 
 ---
 
 ## 1. Hardware Requirements
 
-**Event Setup:**
-- **5x ESP32 dev boards** (generic ESP32-WROOM-32 based boards — targeted as `esp32:esp32:esp32` in Arduino IDE).
-- **5x USB data cables** (for flashing and connecting Central to organizer laptop).
-- **1x organizer laptop** with Python 3 and free USB ports.
-- **USB power banks / 4-port wall charger** for the 4 participant boards (they only need power; all game communication is wireless over ESP-NOW).
-- **Projector** connected via HDMI to the organizer laptop displaying `dashboard.py`.
+**Needed now:**
+- 5x ESP32 dev boards (any generic ESP32-WROOM-32 based board works —
+  the code targets the generic `esp32:esp32:esp32` board in Arduino IDE)
+- 5x USB cables (data-capable, not charge-only) for flashing
+- 1x organizer laptop with a free USB port, Arduino IDE, and Python 3
+- USB power banks or a multi-port USB charger for the 4 participant
+  boards during the event (they don't need to stay connected to a PC)
+- Optional: projector with an HDMI/VGA input for the laptop
 
-**TFT Display (2.4" SPI Touch TFT — ILI9341 + XPT2046):**
-`participant_node.ino` is fully implemented for a 2.4" 240x320 touch display using the `TFT_eSPI` library.
-- **Before physical displays arrive:** You can test everything using `virtual_display.py` or Serial Monitor. **NO code changes are needed on `participant_node.ino`.**
-- **Once physical displays arrive:**
-  1. Paste the pin configuration into TFT_eSPI's library-level `User_Setup.h` once:
-     ```cpp
-     #define ILI9341_DRIVER
-     #define TFT_CS   5
-     #define TFT_DC   2
-     #define TFT_RST  4
-     #define TFT_MOSI 23
-     #define TFT_SCLK 18
-     #define TFT_MISO 19
-     #define TOUCH_CS 15
-     #define SPI_FREQUENCY        40000000
-     #define SPI_TOUCH_FREQUENCY  2500000
-     ```
-  2. Run `File > Examples > TFT_eSPI > Generic > Touch_calibrate` on each board and paste the 5 numbers into `touchCalData[5]` in `participant_node.ino`.
+**Display: 2.4" SPI touch TFT (ILI9341, 240x320, resistive touch).**
+Each participant board drives one, through the TFT_eSPI library. The
+touch screen shows the target-team buttons, the 5x5 coordinate grid,
+and the ATTACK button. Until the display is wired up, the code still
+runs fine without it (SPI writes to a missing display just do
+nothing) and the Serial testing mode (`CONFIG` / `STATUS` / manual
+`target x y` attacks) stands in for the touchscreen.
 
----
+Default wiring (VSPI; check against the silkscreen on your module):
 
-## 2. Testing Without Physical Displays (Step-by-Step)
+| TFT pin | ESP32 GPIO |
+|---|---|
+| VCC / GND | 3.3V / GND |
+| CS / RESET / DC | 5 / 4 / 2 |
+| SDI (MOSI) / SCK / SDO (MISO) | 23 / 18 / 19 |
+| LED (backlight) | 3.3V |
+| T_CS / T_IRQ | 15 / 27 |
+| T_CLK / T_DIN / T_DO | shared with SCK / MOSI / MISO |
 
-You do **NOT** need to wait for physical displays to arrive. The repository includes four dedicated test tools:
-
-### Method A: Interactive Virtual TFT Display (`virtual_display.py`)
-A 1:1 desktop simulation of the physical 240x320 ILI9341 touch display.
-It renders the exact same target buttons, 5x5 coordinate grid, attack button, and color-coded result banners.
-
-```bash
-# 1. Connect a participant ESP32 running participant_node.ino via USB (e.g. COM4)
-# 2. Run the virtual display:
-python virtual_display.py --port COM4 --team 1
-```
-
-- **Zero changes to `participant_node.ino`:** Communicates over USB Serial fallback.
-- **Interactive:** When it's your turn, click the opponent button (`T2`), click a grid cell (`B3`), and click **ATTACK**. The tool sends the command to the ESP32, which fires the ESP-NOW packet to Central!
-- **Feedback:** Displays the 1500ms orange "HIT", blue "MISS", or red "ELIMINATED" banner.
-- **Offline Demo Mode:** Run `python virtual_display.py` without any hardware connected and use the bottom test buttons ("Your Turn", "Hit", "Miss", "Sunk") to verify all screens.
-
-### Method B: Offline Dashboard Rehearsal (`simulate_dashboard.py`)
-Rehearse the projector dashboard with **ZERO hardware and ZERO serial ports**:
-```bash
-python simulate_dashboard.py
-```
-Open `http://localhost:5000` in your browser. It automatically registers simulated teams, plays turns with randomized hits/misses, and lets you test `START`, `FORCE_START`, `SKIP_TURN`, and `RESET` buttons directly.
-
-### Method C: Mock Central Testing (`mock_central.py`)
-To test the organizer dashboard against a fake Central ESP32 over a virtual/loopback COM port:
-```bash
-python mock_central.py --port COM3
-```
-In another terminal:
-```bash
-python dashboard.py
-```
-
-### Method D: Desktop C++ Logic Tests (`central_logic_test.cpp`)
-Verifies all pure game rules in `game_logic.h` (ship validation, force start, turn skipping, repeat attacks, 9-cell sinkings):
-```bash
-g++ -std=c++17 -Wall -Wextra -I central_node central_logic_test.cpp -o central_logic_test
-./central_logic_test
-```
-
-### Method E: Serial Monitor Manual Testing
-`participant_node.ino` has a built-in Serial testing mode at 115200 baud:
-- Type `CONFIG` — shows board configuration, team ID, and Central MAC.
-- Type `STATUS` — displays current round state and active turn.
-- Type `<target> <x> <y>` — e.g. `2 3 4` fires an attack at Team 2, column 3, row 4.
+One-time library setup: paste the pin block from the top of
+`participant_node.ino` into TFT_eSPI's own `User_Setup.h`. Then, **per
+board**, run the TFT_eSPI `Touch_calibrate` example and paste its 5
+numbers into `touchCalData[]` (touch panels vary unit to unit).
 
 ---
 
-## 3. Setup Instructions (Real Hardware)
+## 2. Setup Instructions
 
-1. **Install Arduino IDE** (2.x recommended), then add ESP32 board support:
-   File → Preferences → "Additional Boards Manager URLs" → add:
-   `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
-   Then Tools → Board → Boards Manager → search "esp32" → Install.
-   Select "ESP32 Dev Module" as the board.
-2. **Install Python dependencies:**
-   ```bash
-   pip install flask pyserial
-   ```
-3. **Find each board's MAC address:** Both sketches print their own MAC on boot (115200 baud).
-   Flash `central_node.ino` to the Central board and note its MAC. Then flash `participant_node.ino` to each participant board one by one, noting each MAC.
-4. **Enter the 4 participant MACs** into `central_node.ino`'s `participantMacs[]` array in Team 1→4 order.
-5. **Enter Central's MAC** into every participant board's `centralMac[]`.
-6. **Set `MY_TEAM_ID` (1–4) and `MY_TEAM_NAME`** on each participant board.
-7. **Set `myShips[3]`** on each participant board (or keep the default valid example).
-8. **Check `ESPNOW_CHANNEL`** matches across all 5 boards (default `1`).
-9. **Flash Central** with the final MAC table.
-10. **Flash all 4 participant boards** with their respective team configs.
-11. **Connect Central to laptop via USB**, set `SERIAL_PORT` in `dashboard.py` (e.g. `COM3`), close the Arduino Serial Monitor, and run `python dashboard.py`. Open `http://localhost:5000` and project the tab.
+1. **Install Arduino IDE** (2.x recommended), then add ESP32 board
+   support: File → Preferences → "Additional Boards Manager URLs" →
+   add `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`,
+   then Tools → Board → Boards Manager → search "esp32" → Install.
+   Select a generic "ESP32 Dev Module" as the board.
+2. **Install Python 3**, then `pip install flask pyserial` (add
+   `--break-system-packages` if pip complains about an
+   "externally-managed environment").
+3. **Find each board's MAC address.** Both sketches print their own
+   MAC address on boot (115200 baud). Flash `central_node.ino` to the
+   board that will be your Central and note its MAC — you'll need it
+   for every participant's `centralMac[]`. Then flash
+   `participant_node.ino` to each of the 4 participant boards **one at
+   a time**, noting each one's MAC before moving to the next.
+4. **Enter the 4 participant MACs** into `central_node.ino`'s
+   `participantMacs[]` array, in Team 1→4 order.
+5. **Enter the Central's MAC** into every participant board's
+   `centralMac[]`.
+6. **Set `MY_TEAM_ID` and `MY_TEAM_NAME`** on each participant board
+   (1–4, matching the order you used in step 4).
+7. **Set each board's `myShips[3]`** — either your real layout for
+   that team, or leave the built-in example as-is for a quick first
+   test (it's already valid). Ships can be horizontal, vertical, or
+   **diagonal** (`ORIENT_DIAG_DOWN` goes down-right from the start cell,
+   `ORIENT_DIAG_UP` goes up-right). `start_x`/`start_y` is always the
+   ship's first cell. On the 5x5 grid a size-5 diagonal only fits
+   corner to corner.
+8. **Check `ESPNOW_CHANNEL`** matches across all 5 boards (defaults to
+   `1` in both files — only change it if you have a reason to).
+9. **Re-upload `central_node.ino`** to the Central board (after step 4).
+   Keep **`game_logic.h` in the same sketch folder** as
+   `central_node.ino` — it holds the game rules and the sketch won't
+   compile without it (Arduino IDE shows it as a second tab).
+10. **Re-upload `participant_node.ino`** to each participant board
+    (after steps 5–7, with that board's own config).
+11. **Connect Central to the laptop** via USB and leave it connected
+    for the whole event.
+12. **Set `SERIAL_PORT`** at the top of `dashboard.py` to Central's
+    port — Device Manager on Windows (e.g. `COM5`), or
+    `ls /dev/tty.*` (Mac) / `ls /dev/ttyUSB*` (Linux).
+13. **Close the Arduino Serial Monitor** if it's open — it locks the
+    port and `dashboard.py` won't be able to connect while it's open.
+14. **Run `python dashboard.py`**, open `http://localhost:5000`, and
+    project that tab.
 
 ---
 
-## 4. Organizer Controls & `FORCE_START`
-
-From the projector dashboard or via Central's Serial interface:
-- **`START`** — Starts the round once all 4 teams have registered.
-- **`FORCE_START`** — Starts the round when only 2 or 3 teams have registered (e.g. a team fails to show up). Unregistered teams are automatically skipped in the turn order.
-- **`SKIP_TURN`** — Manually advances turn to the next alive team if a team's node disconnects or stalls.
-- **`RESET`** — Resets all grids and team state back to SETUP for a fresh round. Automatically creates a new match log.
-
----
-
-## 5. Testing Plan Checklist
+## 3. Testing Plan
 
 **Registration**
 - [ ] A correctly-configured board registers and shows REGISTERED
 - [ ] A board with a mismatched `MY_TEAM_ID` vs. its MAC gets rejected
-- [ ] A board with an invalid ship layout (wrong sizes, overlapping ships) gets rejected
+- [ ] A board with an invalid ship layout (wrong sizes, overlapping
+      ships, or a ship running off the 5x5 grid) gets rejected
+- [ ] Diagonal ships (down-right and up-right) register fine, and a
+      diagonal running off any edge or crossing another ship is rejected
 - [ ] All 4 registered → Central moves from SETUP to READY
-- [ ] 2 or 3 registered → `FORCE_START` initiates the match cleanly
 
 **Attacks**
-- [ ] A miss updates target's grid to `M` and passes turn
-- [ ] A hit updates target's grid to `H` and passes turn
-- [ ] Attacking an already-attacked cell → INVALID, turn **not** consumed
+- [ ] A miss updates the target's grid to `M` and passes the turn
+- [ ] A hit updates the target's grid to `H` and passes the turn
+- [ ] Attacking an already-attacked cell → INVALID, turn is **not**
+      consumed
 - [ ] Bad coordinates (outside 0–4) → INVALID
 - [ ] Attacking yourself → INVALID
 - [ ] Attacking out of turn → INVALID
-- [ ] The 9th hit on a team eliminates it (attacker gets SUNK / ELIMINATED)
+- [ ] The 9th hit on a team eliminates it (attacker gets SUNK, not HIT)
 
 **Turns & rounds**
-- [ ] Eliminating a team correctly skips them in turn order (1→3→4→1)
-- [ ] Game ends automatically when only one team remains alive
-- [ ] `SKIP_TURN` advances turn past disconnected/stalled players
-- [ ] `RESET` clears everything and starts a fresh round
+- [ ] Eliminating a team correctly skips them in the turn order
+      (eliminate Team 2, confirm turns go 1→3→4→1, not through 2)
+- [ ] Game ends automatically when only one team is left
+- [ ] `SKIP_TURN` manually advances the turn when a board is stuck
+- [ ] `RESET` clears everything and returns to SETUP
+- [ ] A second round can register and play through cleanly after RESET
 
-**Resilience & Persistence**
-- [ ] Powering off one participant mid-game doesn't affect other teams
-- [ ] Powering that board back on RECONNECTS with state intact
-- [ ] Dashboard restart / browser refresh rebuilds full state from Central snapshot
-- [ ] Central power-loss recovery: rebooting Central restores full game state from NVS Flash
+**Resilience**
+- [ ] Powering off one participant mid-game doesn't affect the other
+      3 teams' play
+- [ ] Powering that board back on gets it RECONNECTED with its
+      existing hits/misses intact (not reset)
+- [ ] A **mismatched** reconnect attempt (different ship config sent
+      from the same MAC) gets REJECTED and doesn't touch stored state
+- [ ] Killing and restarting `dashboard.py` mid-game re-fetches state
+      via `GET_STATE` and redraws correctly
+- [ ] Refreshing the browser tab repopulates immediately from
+      `/api/state`, without waiting for the next live event
+- [ ] **Central power-loss recovery:** mid-round, physically power-cycle
+      the Central board (not just unplug from the laptop — an actual
+      power loss). On reboot it should restore exactly where it left
+      off (check via `STATUS`/`GRID` or the dashboard).
+
+**Match log**
+- [ ] `match_logs/round_1_*.txt` is created on startup and contains
+      timestamped lines for each event
+- [ ] Triggering `RESET` closes that file and opens `round_2_*.txt`
+- [ ] Organizer button clicks (START/RESET/SKIP_TURN) show up in the
+      log, not just Central-originated events
 
 ---
 
-## 6. Troubleshooting
+## 4. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Participant never registers | MAC typo somewhere | Re-check `participantMacs[]` on Central and `centralMac[]` on participant |
-| Packets silently drop | ESP-NOW channel mismatch | Confirm `ESPNOW_CHANNEL` is identical on all 5 boards |
-| `dashboard.py` cannot open port | Port locked by Arduino Serial Monitor or wrong port | Close Arduino Serial Monitor; verify COM port in Device Manager |
-| No physical display yet | Hardware still in transit | Use `python virtual_display.py --port COMx` or `simulate_dashboard.py` |
-| Touch offset on physical TFT | Uncalibrated touch controller | Run `Touch_calibrate` example and update `touchCalData[]` |
+| Participant never registers | MAC typo somewhere | Re-check `participantMacs[]` on Central and `centralMac[]` on the participant byte-for-byte against what each board printed on boot |
+| Registration/attacks silently never arrive, no errors | ESP-NOW channel mismatch | Confirm `ESPNOW_CHANNEL` is identical on **all 5** boards |
+| `FATAL: esp_now_init() failed` | Core/board issue | Re-flash; double check "ESP32 Dev Module" (or your exact board) is selected in Tools → Board |
+| `WARNING: could not add ESP-NOW peer` | Malformed MAC array | Check for typos/missing commas in the MAC byte arrays |
+| `dashboard.py` can't open the serial port | Wrong `SERIAL_PORT`, board not plugged in, or Arduino Serial Monitor has it open | Fix the port string; close the Serial Monitor before running the dashboard |
+| `pip install` fails with "externally-managed-environment" | Newer Python/OS package policy | Add `--break-system-packages` to the pip command |
+| Browser can't reach `http://localhost:5000` | Dashboard didn't start, or a firewall is blocking it | Check the terminal for errors; try `http://127.0.0.1:5000` |
+| `WARNING: ignored a packet of unexpected size` | `central_node.ino` and `participant_node.ino` have drifted out of sync | Make sure both files' packet structs are byte-for-byte identical — re-copy from the same version of each file |
+| Won't compile: `esp_now_recv_info_t does not name a type` | You're on an older ESP32 core than expected | Shouldn't happen anymore — both files now auto-detect core 2.x vs 3.x via `ESP_IDF_VERSION_MAJOR`. If it still does, update the ESP32 board package in Boards Manager |
+| Blank / white TFT | `User_Setup.h` pins not set, or wiring differs | Paste the pin block into TFT_eSPI's `User_Setup.h` and re-check wiring against your module's silkscreen |
+| Touches land in the wrong place | Default `touchCalData[]` still in use | Run TFT_eSPI's `Touch_calibrate` on that board and paste its 5 numbers in |
+| Won't compile: `game_logic.h: No such file` | Not in the same folder as `central_node.ino` | Put both files in one sketch folder |
 
 ---
 
-## 7. Features Added Beyond Original Spec
+## 5. Future Improvements (V2 ideas)
 
-- **`dashboard.py` Command Deck (v2)** — 75/25 widescreen tactical layout, live HP bars, offline-safe typography (no CDN fonts), and animated tactical mesh.
-- **Fog of War Protection** — Dashboard hides intact ship coordinates so projected screen does not leak positions to players.
-- **`virtual_display.py`** — Interactive 2.4" ILI9341 display simulator & hardware bridge.
-- **`simulate_dashboard.py`** — Offline rehearsal server for testing dashboard with zero hardware.
-- **`mock_central.py`** — Fake Central ESP32 for testing over Serial without hardware.
-- **`central_logic_test.cpp`** — Desktop automated test harness for game rules.
-- **`FORCE_START`** — Start rounds with 2 or 3 teams when attendance is partial.
-- **Shared `game_logic.h`** — Pure C++ rule engine used by Central and test tools.
-- **Persistent match logs** — Each round writes to `match_logs/round_N_*.txt`.
-- **Power-loss protection** — Central saves state to ESP32 NVS Preferences on every move.
+- Finalized TFT model + real touch UI (the one piece intentionally
+  left open in V1)
+- Drag-to-place ship UI instead of typing coordinates into `myShips[]`
+- LEDs / buzzer / sound effects for hit, miss, and elimination
+- A visible per-turn countdown timer
+- A score system / leaderboard across multiple rounds
+- Separate public vs. organizer views (hide ship positions until hit)
+- Automatic tournament bracket management across rounds
+- A proper ESP-NOW ACK/retry protocol (today a failed send just logs
+  a warning — fine for a turn-based, human-paced game, but a real
+  retry loop would be more robust)
+- Physical START/RESET buttons wired directly to Central, as a backup
+  to the dashboard/Serial commands
+- A desktop test harness / mock-Central script for automated testing
+  without hardware (discussed, not yet built — happy to build this if
+  useful before the boards arrive)
+
+---
+
+## 6. Already Added Beyond the Original Plan
+
+A few things came up during development and are already done, not
+just planned:
+
+- **Persistent match logs** — `dashboard.py` writes a timestamped,
+  plain-text log per round to `match_logs/`, surviving RESETs and
+  dashboard restarts.
+- **Power-loss protection** — `central_node.ino` saves game state to
+  flash after every action and restores it on boot, so a Central power
+  blip mid-round no longer loses the match.
+- **ESP32 core 2.x/3.x compatibility** — both `.ino` files now detect
+  the installed core version at compile time and use the matching
+  ESP-NOW callback signature, so it doesn't matter which core version
+  ends up on your lab machines.
+- **FORCE_START** — organizer button/command to start with fewer than
+  4 teams (minimum 2) if a team doesn't show up. Turn order skips any
+  team that never registered.
+- **Diagonal ships** — ships may be horizontal, vertical, or diagonal
+  (both directions).
+- **`game_logic.h`** — all game rules in one shared header, used by
+  both `central_node.ino` and the desktop test harness.
+- **Test tools (no hardware needed)** — `central_logic_test.cpp`
+  (`g++ -std=c++11 central_logic_test.cpp -o t && ./t`) runs the rules
+  directly; `mock_central.py` plus a virtual serial pair (socat on
+  Linux/Mac, com0com on Windows) lets you exercise `dashboard.py`
+  end to end.
+- **Real TFT touch UI** in `participant_node.ino` (see section 1).

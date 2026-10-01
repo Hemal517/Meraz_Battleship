@@ -32,8 +32,16 @@
 #define MAX_TEAMS  4
 #define GRID_SIZE  5
 
+// Ship directions. start_x/start_y is always the ship's FIRST cell and
+// the ship grows from there:
+//   HORIZONTAL : rightward       (dx=+1, dy= 0)
+//   VERTICAL   : downward        (dx= 0, dy=+1)
+//   DIAG_DOWN  : down-right      (dx=+1, dy=+1)  e.g. (0,0) -> (4,4)
+//   DIAG_UP    : up-right        (dx=+1, dy=-1)  e.g. (0,4) -> (4,0)
 #define ORIENT_HORIZONTAL 0
 #define ORIENT_VERTICAL   1
+#define ORIENT_DIAG_DOWN  2
+#define ORIENT_DIAG_UP    3
 
 #define CELL_WATER      0
 #define CELL_SHIP       1
@@ -86,52 +94,50 @@ typedef struct __attribute__((packed)) {
   uint8_t ship_len;     // 1, 3, or 5
   uint8_t start_x;      // 0-4
   uint8_t start_y;      // 0-4
-  uint8_t orientation;  // ORIENT_HORIZONTAL or ORIENT_VERTICAL
+  uint8_t orientation;  // ORIENT_HORIZONTAL / VERTICAL / DIAG_DOWN / DIAG_UP
 } ShipPlacement;
 
 // Builds outGrid from 3 ship placements. Returns true only if the
 // layout is fully legal: exactly one ship of length 1, one of 3, one
-// of 5, straight lines only, fits in the 5x5 grid, no overlaps.
+// of 5, straight lines only (horizontal, vertical, or diagonal), fits
+// in the 5x5 grid, no overlaps.
 inline bool buildAndValidateGrid(ShipPlacement ships[3], uint8_t outGrid[GRID_SIZE][GRID_SIZE]) {
-  // 1. Start with an empty ocean (all WATER)
   for (int r = 0; r < GRID_SIZE; r++)
     for (int c = 0; c < GRID_SIZE; c++)
       outGrid[r][c] = CELL_WATER;
 
   bool sawLen1 = false, sawLen3 = false, sawLen5 = false;
 
-  // 2. Loop through the 3 ships the user provided
   for (int s = 0; s < 3; s++) {
     uint8_t len = ships[s].ship_len;
     uint8_t sx = ships[s].start_x;
     uint8_t sy = ships[s].start_y;
     uint8_t orient = ships[s].orientation;
 
-    // 3. Ensure they gave exactly one of each valid size (1, 3, and 5)
     if (len == 1) { if (sawLen1) return false; sawLen1 = true; }
     else if (len == 3) { if (sawLen3) return false; sawLen3 = true; }
     else if (len == 5) { if (sawLen5) return false; sawLen5 = true; }
     else return false;
 
-    // 4. Ensure orientation and starting coordinates are mathematically valid
-    if (orient != ORIENT_HORIZONTAL && orient != ORIENT_VERTICAL) return false;
+    int dx, dy;
+    switch (orient) {
+      case ORIENT_HORIZONTAL: dx = 1; dy = 0;  break;
+      case ORIENT_VERTICAL:   dx = 0; dy = 1;  break;
+      case ORIENT_DIAG_DOWN:  dx = 1; dy = 1;  break;
+      case ORIENT_DIAG_UP:    dx = 1; dy = -1; break;
+      default: return false;
+    }
     if (sx >= GRID_SIZE || sy >= GRID_SIZE) return false;
 
-    // 5. "Draw" the ship onto the virtual grid
     for (int i = 0; i < len; i++) {
-      int x = sx + (orient == ORIENT_HORIZONTAL ? i : 0);
-      int y = sy + (orient == ORIENT_VERTICAL ? i : 0);
-      
-      // If the ship goes off the edge, reject it
-      if (x >= GRID_SIZE || y >= GRID_SIZE) return false;
-      // If the ship crashes into another ship we already drew, reject it
+      int x = sx + dx * i;
+      int y = sy + dy * i;
+      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return false;
       if (outGrid[y][x] != CELL_WATER) return false;
-      
       outGrid[y][x] = CELL_SHIP;
     }
   }
 
-  // 6. Final check: Did they actually provide all 3 required ships?
   return sawLen1 && sawLen3 && sawLen5;
 }
 
@@ -287,39 +293,31 @@ inline uint8_t tryAttack(
   bool eliminated[MAX_TEAMS],
   bool registered[MAX_TEAMS]
 ) {
-  // 1. Basic sanity checks (Is the game running? Are they spoofing their ID?)
   if (macTeam < 1 || macTeam > MAX_TEAMS) return ATTACK_FAIL_ID_MISMATCH;
   if (claimedAttackerId != macTeam) return ATTACK_FAIL_ID_MISMATCH;
   if (roundState != STATE_RUNNING) return ATTACK_FAIL_NOT_RUNNING;
 
-  // 2. Check turn rules (Is it their turn? Are they already dead?)
   int attackerIdx = macTeam - 1;
   if (attackerIdx != currentTurnIndex) return ATTACK_FAIL_WRONG_TURN;
   if (eliminated[attackerIdx]) return ATTACK_FAIL_ATTACKER_DEAD;
 
-  // 3. Validate the target (Are they shooting themselves? Is the target in the game?)
   if (targetId < 1 || targetId > MAX_TEAMS) return ATTACK_FAIL_BAD_TARGET;
   int targetIdx = targetId - 1;
   if (targetIdx == attackerIdx) return ATTACK_FAIL_SELF_ATTACK;
   if (!registered[targetIdx] || eliminated[targetIdx]) return ATTACK_FAIL_TARGET_INVALID;
 
-  // 4. Validate coordinates (Did they shoot off the edge of the 5x5 board?)
   if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return ATTACK_FAIL_BAD_COORDS;
 
-  // 5. Check if they already shot here before
   uint8_t cell = grid[targetIdx][y][x];
   if (cell == CELL_MISS || cell == CELL_HIT) return ATTACK_FAIL_ALREADY_HIT;
 
-  // 6. Process the shot!
   uint8_t resultCode;
   if (cell == CELL_WATER) {
-    grid[targetIdx][y][x] = CELL_MISS; // They hit water
+    grid[targetIdx][y][x] = CELL_MISS;
     resultCode = RESULT_MISS;
   } else {  // CELL_SHIP
-    grid[targetIdx][y][x] = CELL_HIT;  // They hit a ship!
-    remainingShips[targetIdx]--;       // Reduce target's health
-    
-    // Did that shot destroy their very last ship segment?
+    grid[targetIdx][y][x] = CELL_HIT;
+    remainingShips[targetIdx]--;
     if (remainingShips[targetIdx] <= 0) {
       eliminated[targetIdx] = true;
       resultCode = RESULT_SUNK;
@@ -328,7 +326,6 @@ inline uint8_t tryAttack(
     }
   }
 
-  // 7. Move the turn to the next player
   advanceTurn(roundState, currentTurnIndex, eliminated, registered);
   return resultCode;
 }

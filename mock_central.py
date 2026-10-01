@@ -1,278 +1,369 @@
 """
-MERAZ BATTLESHIP - MOCK CENTRAL ESP32 (HARDWARE-LESS TEST TOOL)
-================================================================
-Simulates the Central ESP32 over a Serial COM port so you can test
-the organizer dashboard and participant nodes without any real hardware.
+MERAZ BATTLESHIP - MOCK CENTRAL (test tool, not a deliverable file)
+=====================================================================
+Pretends to be the Central ESP32 so you can fully exercise dashboard.py
+- live updates, buttons, match-log rollover, reconnect behavior - with
+zero hardware. It speaks the exact same protocol central_node.ino does:
+newline-delimited JSON ({"type":"state",...} / {"type":"event",...})
+out, and plain-text commands (GET_STATE/START/FORCE_START/RESET/
+SKIP_TURN) in.
 
-Usage:
-    python mock_central.py --port COM2
-Or loopback / virtual port pair:
-    e.g. COM2 <-> COM3 (using com0com or socat)
+WHAT IT DOES ON ITS OWN, so you can just watch the dashboard:
+  1. Registers all 4 teams, a couple seconds apart.
+  2. Waits for you to click START on the dashboard - or auto-starts
+     after 15s if you don't, so you're never stuck waiting.
+  3. Plays out random (but rule-following) attacks every 1.5-3
+     seconds until one team is left, producing a realistic mix of
+     hits, misses, and an elimination.
+  4. Resets and starts another round automatically, so you can watch
+     the match-log rollover happen too.
+You can also drive it manually at any point - clicking RESET, START,
+FORCE_START, or SKIP_TURN on the dashboard talks to this script exactly
+like it would talk to the real Central.
 
-What it does:
-  1. Emulates the Central node state machine:
-     SETUP -> READY -> RUNNING -> GAMEOVER
-  2. Simulates incoming participant registrations with pacing.
-  3. Responds to GET_STATE with full 5x5 grid state JSON snapshots.
-  4. Responds to organizer commands:
-     - START: Starts game if 4 teams are registered.
-     - FORCE_START: Starts game immediately if >= 2 teams registered.
-     - SKIP_TURN: Advances turn to the next alive team.
-     - RESET: Clears all grids and resets to SETUP.
-  5. Plays simulated attack turns (hits, misses, eliminations) so you
-     can watch the live dashboard in action!
+=====================================================================
+SETUP - you need a VIRTUAL SERIAL PORT PAIR (two linked fake serial
+ports, so this script can write to one end and dashboard.py reads the
+other). Real hardware isn't involved at all.
+
+Linux / Mac (using socat - `brew install socat` or `apt install socat`):
+    socat -d -d pty,raw,echo=0 pty,raw,echo=0
+  This prints two paths, e.g.:
+    2026/01/01 12:00:00 socat[1234] N PTY is /dev/pts/3
+    2026/01/01 12:00:00 socat[1234] N PTY is /dev/pts/4
+  Leave that command running. Set MOCK_PORT below to one path (e.g.
+  /dev/pts/3), and dashboard.py's SERIAL_PORT to the other (/dev/pts/4).
+
+Windows (using com0com, free - search "com0com" to download):
+  Install it and create a port pair, e.g. COM8 <-> COM9. Set MOCK_PORT
+  to COM8 and dashboard.py's SERIAL_PORT to COM9.
+
+Then just run:
+    python mock_central.py
+  (or `python mock_central.py <port>` to override MOCK_PORT for one run)
+and separately run dashboard.py as usual, pointed at the other port.
+=====================================================================
 """
 
-import sys
-import time
 import json
 import random
-import argparse
+import sys
 import threading
+import time
 
 try:
-    import serial
-    SERIAL_AVAILABLE = True
+    import serial  # pyserial
 except ImportError:
-    SERIAL_AVAILABLE = False
+    print("Missing dependency 'pyserial'. Install it with: pip install pyserial")
+    raise SystemExit(1)
+
+# =====================================================================
+# CONFIGURATION
+# =====================================================================
+
+MOCK_PORT = "/dev/pts/3"  # TODO: change to your half of the virtual port pair
+BAUD_RATE = 115200
+
+MAX_TEAMS = 4
+GRID_SIZE = 5
+
+CELL_WATER, CELL_SHIP, CELL_MISS, CELL_HIT = 0, 1, 2, 3
+STATE_SETUP, STATE_READY, STATE_RUNNING, STATE_GAMEOVER = 0, 1, 2, 3
+
+AUTO_START_AFTER_SECONDS = 15   # if nobody clicks START, start anyway
+ATTACK_DELAY_RANGE = (1.5, 3.0)  # seconds between automatic attacks
+NEXT_ROUND_DELAY_SECONDS = 8
+
+# =====================================================================
+# STATE
+# =====================================================================
+
+state_lock = threading.RLock()  # reentrant - action functions call send_state()/send_event() while holding it
+reset_event = threading.Event()  # lets an incoming RESET interrupt the autoplay loop immediately
+skip_next_auto_reset = False     # avoids a redundant second reset right after an externally-triggered one
 
 
-class MockCentral:
-    def __init__(self, port, baud=115200, auto_play=True):
-        self.port = port
-        self.baud = baud
-        self.auto_play = auto_play
+def blank_team(team_id):
+    return {
+        "id": team_id,
+        "name": "",
+        "registered": False,
+        "eliminated": False,
+        "remaining": 0,
+        "grid": [[CELL_WATER] * GRID_SIZE for _ in range(GRID_SIZE)],
+    }
 
-        self.round_state = 0  # 0=SETUP, 1=READY, 2=RUNNING, 3=GAMEOVER
-        self.current_turn = 1
-        self.teams = [
-            {"id": 1, "name": "AlphaSquad", "registered": False, "eliminated": False, "remaining": 9, "grid": self._make_grid()},
-            {"id": 2, "name": "BetaCrew",   "registered": False, "eliminated": False, "remaining": 9, "grid": self._make_grid()},
-            {"id": 3, "name": "GammaFleet", "registered": False, "eliminated": False, "remaining": 9, "grid": self._make_grid()},
-            {"id": 4, "name": "DeltaForce", "registered": False, "eliminated": False, "remaining": 9, "grid": self._make_grid()},
-        ]
-        self.log = []
-        self.running = True
-        self.lock = threading.Lock()
 
-    def _make_grid(self):
-        # 5x5 grid: 0=water, 1=ship, 2=miss, 3=hit
-        g = [[0 for _ in range(5)] for _ in range(5)]
-        # Place 3 ships: size 1 at (0,0), size 3 at (0,1)-(2,1), size 5 at (4,0)-(4,4)
-        g[0][0] = 1
-        g[1][0] = 1
-        g[1][1] = 1
-        g[1][2] = 1
-        for y in range(5):
-            g[y][4] = 1
-        return g
+state = {
+    "round_state": STATE_SETUP,
+    "current_turn": 0,
+    "teams": [blank_team(i) for i in range(1, MAX_TEAMS + 1)],
+}
 
-    def add_log(self, text):
-        with self.lock:
-            self.log.append(text)
-            self.log = self.log[-20:]
-        print(f"[Central Log] {text}")
-        return json.dumps({"type": "event", "text": text}) + "\n"
 
-    def get_state_json(self):
-        with self.lock:
-            state = {
-                "type": "state",
-                "round_state": self.round_state,
-                "current_turn": self.current_turn if self.round_state == 2 else 0,
-                "teams": self.teams,
-                "log": self.log
-            }
-        return json.dumps(state) + "\n"
+def demo_grid():
+    """The same fixed layout game_logic.h's validShips() uses - good
+    enough for exercising the dashboard's rendering, doesn't need to
+    be a different layout per team."""
+    grid = [[CELL_WATER] * GRID_SIZE for _ in range(GRID_SIZE)]
+    grid[4][2] = CELL_SHIP                      # size 1 at (x=2, y=4)
+    for x in range(0, 3):
+        grid[0][x] = CELL_SHIP                  # size 3 horizontal at (x=0-2, y=0)
+    for y in range(0, 5):
+        grid[y][4] = CELL_SHIP                  # size 5 vertical at (x=4, y=0-4)
+    return grid
 
-    def reset_game(self):
-        with self.lock:
-            self.round_state = 0
-            self.current_turn = 1
-            for t in self.teams:
-                t["registered"] = False
-                t["eliminated"] = False
-                t["remaining"] = 9
-                t["grid"] = self._make_grid()
-        return self.add_log("Game reset - waiting for teams to register")
 
-    def register_team(self, team_id):
-        with self.lock:
-            idx = team_id - 1
-            if 0 <= idx < 4 and not self.teams[idx]["registered"]:
-                self.teams[idx]["registered"] = True
-                name = self.teams[idx]["name"]
-                all_reg = all(t["registered"] for t in self.teams)
-                if all_reg:
-                    self.round_state = 1
-                return self.add_log(f"Team {team_id} ({name}) registered. Ships verified OK.")
-        return ""
+# =====================================================================
+# SENDING (the wire protocol - matches central_node.ino exactly)
+# =====================================================================
 
-    def start_game(self):
-        with self.lock:
-            if self.round_state == 1:
-                self.round_state = 2
-                self.current_turn = 1
-                return self.add_log("Round started! Team 1 goes first.")
+def send_state(ser):
+    with state_lock:
+        snapshot = {
+            "type": "state",
+            "round_state": state["round_state"],
+            "current_turn": state["current_turn"],
+            "teams": [dict(t) for t in state["teams"]],
+        }
+    ser.write((json.dumps(snapshot) + "\n").encode("utf-8"))
+
+
+def send_event(ser, text):
+    print(f"[mock central] {text}")
+    ser.write((json.dumps({"type": "event", "text": text}) + "\n").encode("utf-8"))
+
+
+# =====================================================================
+# ACTIONS (mirror central_node.ino's behavior closely enough to be a
+# useful stand-in - this is a test double, not the authoritative rules,
+# so it doesn't re-implement every validation check game_logic.h has)
+# =====================================================================
+
+def do_reset(ser):
+    with state_lock:
+        for i in range(MAX_TEAMS):
+            state["teams"][i] = blank_team(i + 1)
+        state["round_state"] = STATE_SETUP
+        state["current_turn"] = 0
+    send_event(ser, "Game reset - waiting for teams to register")
+    send_state(ser)
+
+
+def register_team(ser, team_id):
+    with state_lock:
+        team = state["teams"][team_id - 1]
+        team["registered"] = True
+        team["name"] = f"TEAM {team_id}"
+        team["eliminated"] = False
+        team["remaining"] = 9
+        team["grid"] = demo_grid()
+        if all(t["registered"] for t in state["teams"]):
+            state["round_state"] = STATE_READY
+    send_event(ser, f"TEAM {team_id} (TEAM {team_id}) registered")
+    send_state(ser)
+
+
+def start_game(ser):
+    with state_lock:
+        if state["round_state"] != STATE_READY:
+            return
+        state["round_state"] = STATE_RUNNING
+        state["current_turn"] = 1
+    send_event(ser, "GAME STARTED")
+    send_state(ser)
+
+
+def force_start_game(ser):
+    with state_lock:
+        if state["round_state"] in (STATE_RUNNING, STATE_GAMEOVER):
+            return
+        registered_ids = [t["id"] for t in state["teams"] if t["registered"]]
+        if len(registered_ids) < 2:
+            return
+        state["round_state"] = STATE_RUNNING
+        state["current_turn"] = registered_ids[0]
+        count = len(registered_ids)
+    send_event(ser, f"GAME FORCE-STARTED by organizer with {count} team(s) registered")
+    send_state(ser)
+
+
+def advance_turn(ser):
+    """Caller must hold state_lock."""
+    alive = [t["id"] for t in state["teams"] if t["registered"] and not t["eliminated"]]
+    if len(alive) <= 1:
+        state["round_state"] = STATE_GAMEOVER
+        winner_text = f"GAME OVER - TEAM {alive[0]} WINS" if alive else "GAME OVER - no teams remain"
+        send_event(ser, winner_text)
+        return
+    idx = state["current_turn"] - 1
+    for _ in range(MAX_TEAMS):
+        idx = (idx + 1) % MAX_TEAMS
+        team = state["teams"][idx]
+        if team["registered"] and not team["eliminated"]:
+            state["current_turn"] = team["id"]
+            return
+
+
+def skip_turn(ser):
+    with state_lock:
+        if state["round_state"] != STATE_RUNNING:
+            return
+        send_event(ser, f"Organizer manually skipped TEAM {state['current_turn']}'s turn")
+        advance_turn(ser)
+    send_state(ser)
+
+
+def auto_attack(ser):
+    with state_lock:
+        if state["round_state"] != STATE_RUNNING:
+            return
+        attacker_id = state["current_turn"]
+        targets = [t for t in state["teams"] if t["registered"] and not t["eliminated"] and t["id"] != attacker_id]
+        if not targets:
+            return
+        target = random.choice(targets)
+
+        candidates = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE)
+                      if target["grid"][y][x] in (CELL_WATER, CELL_SHIP)]
+        if not candidates:
+            return
+        x, y = random.choice(candidates)
+        cell = target["grid"][y][x]
+
+        if cell == CELL_WATER:
+            target["grid"][y][x] = CELL_MISS
+            send_event(ser, f"TEAM {attacker_id} attacked TEAM {target['id']} at ({x},{y}) - MISS")
+        else:
+            target["grid"][y][x] = CELL_HIT
+            target["remaining"] -= 1
+            if target["remaining"] <= 0:
+                target["eliminated"] = True
+                send_event(ser, f"TEAM {attacker_id} attacked TEAM {target['id']} at ({x},{y}) "
+                                 f"- HIT, TEAM {target['id']} ELIMINATED")
             else:
-                return self.add_log("Cannot start: not all 4 teams are registered.")
+                send_event(ser, f"TEAM {attacker_id} attacked TEAM {target['id']} at ({x},{y}) - HIT")
 
-    def force_start(self):
-        with self.lock:
-            reg_count = sum(1 for t in self.teams if t["registered"])
-            if reg_count >= 2 and self.round_state in (0, 1):
-                self.round_state = 2
-                # first registered team
-                first = next(t["id"] for t in self.teams if t["registered"])
-                self.current_turn = first
-                return self.add_log(f"GAME FORCE-STARTED by organizer with {reg_count} teams! Team {first} goes first.")
-            else:
-                return self.add_log("FORCE_START rejected: need at least 2 teams.")
+        advance_turn(ser)
+    send_state(ser)
 
-    def skip_turn(self):
-        with self.lock:
-            if self.round_state != 2:
-                return self.add_log("Cannot skip turn - game is not running.")
-            return self._advance_turn(reason="Turn skipped by organizer")
 
-    def _advance_turn(self, reason=""):
-        alive_teams = [t["id"] for t in self.teams if t["registered"] and not t["eliminated"]]
-        if len(alive_teams) <= 1:
-            self.round_state = 3
-            winner = alive_teams[0] if alive_teams else None
-            win_msg = f"GAME OVER! Winner is Team {winner}!" if winner else "GAME OVER! No teams remain."
-            return self.add_log(win_msg)
+# =====================================================================
+# READING COMMANDS FROM THE DASHBOARD
+# =====================================================================
 
-        # Advance clockwise
-        cur = self.current_turn
-        for _ in range(4):
-            cur = (cur % 4) + 1
-            if cur in alive_teams:
-                self.current_turn = cur
+def reader_thread(ser):
+    while True:
+        try:
+            line = ser.readline().decode("utf-8", errors="ignore").strip()
+        except (serial.SerialException, OSError):
+            time.sleep(1)
+            continue
+
+        if not line:
+            continue
+
+        cmd = line.upper()
+        if cmd == "GET_STATE":
+            send_state(ser)
+        elif cmd == "START":
+            start_game(ser)
+        elif cmd == "FORCE_START":
+            force_start_game(ser)
+        elif cmd == "RESET":
+            global skip_next_auto_reset
+            reset_event.set()
+            do_reset(ser)
+            skip_next_auto_reset = True
+        elif cmd == "SKIP_TURN":
+            skip_turn(ser)
+        # STATUS/GRID/HELP are for a human at the real Serial Monitor -
+        # dashboard.py never sends them, so there's nothing to do here.
+
+
+# =====================================================================
+# THE AUTOPLAY DEMO LOOP
+# =====================================================================
+
+def sleep_interruptible(seconds):
+    """Returns early if a RESET comes in while sleeping."""
+    reset_event.wait(timeout=seconds)
+
+
+def run_one_demo_round(ser):
+    global skip_next_auto_reset
+    reset_event.clear()
+    if skip_next_auto_reset:
+        skip_next_auto_reset = False
+    else:
+        do_reset(ser)
+
+    for team_id in range(1, MAX_TEAMS + 1):
+        if reset_event.is_set():
+            return
+        sleep_interruptible(random.uniform(1.0, 2.5))
+        if reset_event.is_set():
+            return
+        register_team(ser, team_id)
+
+    if reset_event.is_set():
+        return
+    send_event(ser, f"All 4 teams registered - click START on the dashboard "
+                     f"(auto-starting in {AUTO_START_AFTER_SECONDS}s otherwise)")
+
+    deadline = time.time() + AUTO_START_AFTER_SECONDS
+    while True:
+        if reset_event.is_set():
+            return
+        with state_lock:
+            if state["round_state"] == STATE_RUNNING:
                 break
+        if time.time() > deadline:
+            start_game(ser)
+            break
+        time.sleep(0.3)
 
-        msg = f"Team {self.current_turn}'s turn."
-        if reason:
-            msg = f"{reason}. {msg}"
-        return self.add_log(msg)
+    while True:
+        if reset_event.is_set():
+            return
+        with state_lock:
+            still_running = state["round_state"] == STATE_RUNNING
+        if not still_running:
+            break
+        sleep_interruptible(random.uniform(*ATTACK_DELAY_RANGE))
+        if reset_event.is_set():
+            return
+        auto_attack(ser)
 
-    def execute_random_attack(self):
-        with self.lock:
-            # 1. Validate game is running
-            if self.round_state != 2:
-                return ""
-            attacker = self.current_turn
-            
-            # 2. Find teams that are alive to target
-            alive_opponents = [t for t in self.teams if t["registered"] and not t["eliminated"] and t["id"] != attacker]
-            if not alive_opponents:
-                return ""
-            target_team = random.choice(alive_opponents)
-            tid = target_team["id"]
+    send_event(ser, f"Demo round finished - starting a fresh round in "
+                     f"{NEXT_ROUND_DELAY_SECONDS}s (or click RESET now)")
+    sleep_interruptible(NEXT_ROUND_DELAY_SECONDS)
 
-            # 3. Pick a random grid cell that hasn't been shot yet
-            unshot = []
-            for r in range(5):
-                for c in range(5):
-                    if target_team["grid"][r][c] in (0, 1):
-                        unshot.append((r, c))
-            if not unshot:
-                return ""
 
-            r, c = random.choice(unshot)
-            col_letter = chr(ord('A') + c)
-            coord_str = f"{col_letter}{r + 1}"
+# =====================================================================
+# ENTRY POINT
+# =====================================================================
 
-            # 4. Check hit or miss and update the target's grid
-            if target_team["grid"][r][c] == 1:
-                target_team["grid"][r][c] = 3  # Hit
-                target_team["remaining"] -= 1
-                
-                # Check if this hit eliminated them entirely
-                if target_team["remaining"] <= 0:
-                    target_team["eliminated"] = True
-                    log_text = f"HIT! Team {attacker} sank Team {tid}'s final ship at {coord_str}! TEAM {tid} ELIMINATED!"
-                else:
-                    log_text = f"HIT! Team {attacker} struck Team {tid} at {coord_str}! ({target_team['remaining']} cells remain)"
-            else:
-                target_team["grid"][r][c] = 2  # Miss
-                log_text = f"MISS! Team {attacker} fired at Team {tid} at {coord_str} (splash)."
+def main():
+    port = sys.argv[1] if len(sys.argv) > 1 else MOCK_PORT
 
-        # 5. Log the result and automatically advance the turn
-        out1 = self.add_log(log_text)
-        out2 = self._advance_turn()
-        return out1 + out2
+    print("=== MERAZ BATTLESHIP - MOCK CENTRAL ===")
+    print(f"Opening {port} @ {BAUD_RATE} baud...")
+    try:
+        ser = serial.Serial(port, BAUD_RATE, timeout=1)
+    except serial.SerialException as e:
+        print(f"Could not open {port}: {e}")
+        print("Check the virtual-port setup instructions at the top of this file.")
+        raise SystemExit(1)
 
-    def run(self):
-        print(f"=== MOCK CENTRAL ESP32 RUNNING on {self.port} ===")
-        print("Ready for connections from dashboard.py or participant nodes.")
+    print("Connected. Point dashboard.py's SERIAL_PORT at the OTHER half of the pair.")
+    print("Running an automatic demo round now - also watching for dashboard button clicks.\n")
 
-        ser = None
-        if SERIAL_AVAILABLE:
-            try:
-                ser = serial.Serial(self.port, self.baud, timeout=0.1)
-                print(f"Serial port {self.port} opened successfully.")
-            except Exception as e:
-                print(f"Notice: Serial port {self.port} could not be opened ({e}).")
-                print("Running in simulation log mode.")
+    threading.Thread(target=reader_thread, args=(ser,), daemon=True).start()
 
-        # Registration simulation timer
-        reg_step = 1
-        last_action = time.time()
-
-        while self.running:
-            now = time.time()
-
-            # Read incoming commands from dashboard
-            if ser and ser.is_open:
-                try:
-                    line = ser.readline().decode("utf-8", errors="ignore").strip()
-                    if line:
-                        cmd = line.upper()
-                        print(f"[Received Cmd] {cmd}")
-                        if cmd == "GET_STATE":
-                            ser.write(self.get_state_json().encode("utf-8"))
-                        elif cmd == "START":
-                            res = self.start_game()
-                            if res: ser.write(res.encode("utf-8"))
-                        elif cmd == "FORCE_START":
-                            res = self.force_start()
-                            if res: ser.write(res.encode("utf-8"))
-                        elif cmd == "RESET":
-                            res = self.reset_game()
-                            if res: ser.write(res.encode("utf-8"))
-                            reg_step = 1
-                        elif cmd == "SKIP_TURN":
-                            res = self.skip_turn()
-                            if res: ser.write(res.encode("utf-8"))
-                except Exception as e:
-                    print(f"Serial error: {e}")
-
-            # Auto-play game logic pacing
-            if self.auto_play and (now - last_action > 3.0):
-                last_action = now
-                if self.round_state == 0 and reg_step <= 4:
-                    ev = self.register_team(reg_step)
-                    reg_step += 1
-                    if ser and ser.is_open and ev:
-                        ser.write(ev.encode("utf-8"))
-                elif self.round_state == 2:
-                    ev = self.execute_random_attack()
-                    if ser and ser.is_open and ev:
-                        ser.write(ev.encode("utf-8"))
-
-            time.sleep(0.05)
+    while True:
+        run_one_demo_round(ser)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Mock Central ESP32")
-    parser.add_argument("--port", type=str, default="COM2", help="COM port to listen on")
-    parser.add_argument("--baud", type=int, default=115200, help="Baud rate")
-    parser.add_argument("--no-autoplay", action="store_true", help="Disable automatic simulated registrations/attacks")
-    args = parser.parse_args()
-
-    mock = MockCentral(args.port, args.baud, auto_play=not args.no_autoplay)
-    try:
-        mock.run()
-    except KeyboardInterrupt:
-        print("\nShutting down Mock Central.")
+    main()

@@ -46,15 +46,18 @@
 // You shouldn't need to touch these.
 // =====================================================================
 
-#define ORIENT_HORIZONTAL 0   // ship grows toward +x (rightward)
-#define ORIENT_VERTICAL   1   // ship grows toward +y (downward)
+// start_x/start_y is always the ship's FIRST cell; it grows from there:
+#define ORIENT_HORIZONTAL 0   // rightward    (dx=+1, dy= 0)
+#define ORIENT_VERTICAL   1   // downward     (dx= 0, dy=+1)
+#define ORIENT_DIAG_DOWN  2   // down-right   (dx=+1, dy=+1)  e.g. (0,0) -> (4,4)
+#define ORIENT_DIAG_UP    3   // up-right     (dx=+1, dy=-1)  e.g. (0,4) -> (4,0)
 
 // One ship: how long it is, where it starts, and which way it points.
 typedef struct __attribute__((packed)) {
   uint8_t ship_len;     // 1, 3, or 5
   uint8_t start_x;      // column, 0-4
   uint8_t start_y;      // row, 0-4
-  uint8_t orientation;  // ORIENT_HORIZONTAL or ORIENT_VERTICAL
+  uint8_t orientation;  // ORIENT_HORIZONTAL / VERTICAL / DIAG_DOWN / DIAG_UP
 } ShipPlacement;
 
 // =====================================================================
@@ -67,13 +70,17 @@ const char *MY_TEAM_NAME = "TEAM 1";
 
 // Your 3 ships. Grid is 5x5, x = column (0-4), y = row (0-4).
 // Rules: exactly one ship of length 1, one of length 3, one of length
-// 5; straight lines only; must fit inside the grid; ships must NOT
-// overlap each other (touching is fine).
+// 5; straight lines only (horizontal, vertical or diagonal); must fit
+// inside the grid; ships must NOT overlap each other (touching is fine).
+// Diagonal ships: ORIENT_DIAG_DOWN starts at the top-left end and goes
+// down-right; ORIENT_DIAG_UP starts at the bottom-left end and goes
+// up-right. On a 5x5 grid a size-5 diagonal only fits corner to corner.
 //
 // Example below (already valid, feel free to leave as-is for testing):
 //   Ship 1 (size 1): single cell at (2,4)
 //   Ship 2 (size 3): horizontal, starts at (0,0) -> covers (0,0)(1,0)(2,0)
 //   Ship 3 (size 5): vertical,   starts at (4,0) -> covers (4,0)..(4,4)
+// Diagonal example: { 3, 0, 2, ORIENT_DIAG_DOWN } -> (0,2)(1,3)(2,4)
 ShipPlacement myShips[3] = {
   { 1, 2, 4, ORIENT_HORIZONTAL },
   { 3, 0, 0, ORIENT_HORIZONTAL },
@@ -83,7 +90,7 @@ ShipPlacement myShips[3] = {
 // TODO: replace with the Central ESP32's real MAC address.
 // The Central prints its own MAC on boot - copy it from there.
 uint8_t centralMac[6] = {
-  0xA0, 0xC8, 0x40, 0x88, 0x00, 0x8C
+  0xA4, 0xCF, 0x12, 0x00, 0x00, 0x00
 };
 
 // All 5 boards (Central + 4 participants) must use the SAME channel.
@@ -216,11 +223,7 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 #else
 void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len);
 #endif
-#if ESP_IDF_VERSION_MAJOR >= 5
-void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status);
-#else
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status);
-#endif
 void processPacket(const uint8_t *data, int len);
 
 bool localValidateShips(ShipPlacement ships[3]);
@@ -306,24 +309,21 @@ void setup() {
 }
 
 void loop() {
-  // 1. Drain packets that arrived via ESP-NOW since the last loop.
+  // Drain packets that arrived via ESP-NOW since the last loop().
   while (pendingHead != pendingTail) {
     PendingPacket p = pendingQueue[pendingHead];
     pendingHead = (pendingHead + 1) % PENDING_QUEUE_SIZE;
     processPacket(p.data, p.len);
   }
 
-  // 2. Keep re-sending registration (non-blocking) until Central confirms it.
+  // Keep re-sending registration (non-blocking) until Central confirms it.
   // Handles the case where our very first registration packet gets lost.
   if (!registrationConfirmed && millis() - lastRegAttemptMillis > REG_RETRY_INTERVAL_MS) {
     sendRegistration();
     lastRegAttemptMillis = millis();
   }
 
-  // 3. Check for any manual commands typed into the Serial monitor
   handleSerialInput();
-  
-  // 4. Update the TFT display UI (draw screens, read touch input)
   uiTick();
 }
 
@@ -349,23 +349,11 @@ void OnDataRecv(const uint8_t *senderMac, const uint8_t *incomingData, int len) 
   pendingTail = next;
 }
 
-#if ESP_IDF_VERSION_MAJOR >= 5
-
-void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.println("WARNING: an ESP-NOW send to Central failed.");
-  }
-}
-
-#else
-
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("WARNING: an ESP-NOW send to Central failed.");
   }
 }
-
-#endif
 
 // =====================================================================
 // PACKET ROUTING - Central only ever sends us RegAck (1 byte),
@@ -419,13 +407,20 @@ bool localValidateShips(ShipPlacement ships[3]) {
     else if (len == 5) { if (sawLen5) return false; sawLen5 = true; }
     else return false;
 
-    if (orient != ORIENT_HORIZONTAL && orient != ORIENT_VERTICAL) return false;
+    int dx, dy;
+    switch (orient) {
+      case ORIENT_HORIZONTAL: dx = 1; dy = 0;  break;
+      case ORIENT_VERTICAL:   dx = 0; dy = 1;  break;
+      case ORIENT_DIAG_DOWN:  dx = 1; dy = 1;  break;
+      case ORIENT_DIAG_UP:    dx = 1; dy = -1; break;
+      default: return false;
+    }
     if (sx >= GRID_SIZE || sy >= GRID_SIZE) return false;
 
     for (int i = 0; i < len; i++) {
-      int x = sx + (orient == ORIENT_HORIZONTAL ? i : 0);
-      int y = sy + (orient == ORIENT_VERTICAL ? i : 0);
-      if (x >= GRID_SIZE || y >= GRID_SIZE) return false;
+      int x = sx + dx * i;
+      int y = sy + dy * i;
+      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return false;
       if (tempGrid[y][x] != 0) return false;
       tempGrid[y][x] = 1;
     }
@@ -632,7 +627,13 @@ void printConfig() {
     Serial.print(": len="); Serial.print(myShips[s].ship_len);
     Serial.print(" start=("); Serial.print(myShips[s].start_x);
     Serial.print(","); Serial.print(myShips[s].start_y); Serial.print(")");
-    Serial.println(myShips[s].orientation == ORIENT_HORIZONTAL ? " HORIZONTAL" : " VERTICAL");
+    switch (myShips[s].orientation) {
+      case ORIENT_HORIZONTAL: Serial.println(" HORIZONTAL"); break;
+      case ORIENT_VERTICAL:   Serial.println(" VERTICAL"); break;
+      case ORIENT_DIAG_DOWN:  Serial.println(" DIAGONAL (down-right)"); break;
+      case ORIENT_DIAG_UP:    Serial.println(" DIAGONAL (up-right)"); break;
+      default:                Serial.println(" INVALID ORIENTATION"); break;
+    }
   }
   Serial.println("==============");
 }
