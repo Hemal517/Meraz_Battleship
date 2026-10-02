@@ -5,15 +5,21 @@
    GAME_LOGIC.H - the actual battleship rules, with zero dependency on
    Arduino, WiFi, or ESP-NOW.
    =====================================================================
-   This header holds every rule from the spec that doesn't care how a
-   packet got here: ship validation, registration rules, attack
-   validation, turn order, and elimination. central_node.ino #includes
-   this and calls into it from handleRegistration()/handleAttack()/
-   cmdSkipTurn() - it's the ONE place those rules are written down.
+   This header holds every rule that doesn't care how a packet got here:
+   ship validation, registration, attack validation, turn order,
+   elimination and (v3) the POWER-UPS.
 
    Keep this file in the same folder as central_node.ino (Arduino IDE
-   will show it as a second tab automatically), and in the same folder
-   as central_logic_test.cpp when compiling the test harness.
+   shows it as a second tab), and next to central_logic_test.cpp /
+   powerup_test.cpp when compiling the test harnesses.
+
+   v3 CHANGES (all backwards compatible):
+     - tryAttack() got two OPTIONAL trailing parameters. Without them it
+       behaves exactly as before, so central_logic_test.cpp still passes.
+     - advanceTurn() is untouched; advanceTurnPS() is the power-up aware
+       version (mine skips + shield/smoke expiry).
+     - New: PowerState, fireAtCell(), tryPowerUp(), displayCell(),
+       displayRemaining().
    ===================================================================== */
 
 #include <cstdint>
@@ -42,10 +48,14 @@
 #define CELL_MISS       2
 #define CELL_HIT        3
 
+// FeedbackPacket.result_code
 #define RESULT_MISS     0
 #define RESULT_HIT      1
 #define RESULT_INVALID  2
 #define RESULT_SUNK     3   // this hit eliminated the whole team
+#define RESULT_MINE     4   // v3: the cell held a MINE - attacker loses their next turn
+#define RESULT_BLOCKED  5   // v3: the cell is under a SHIELD - nothing happened, turn used
+#define RESULT_UNKNOWN  6   // v3: target is under SMOKE - attacker is not told the result
 
 #define REG_OK                   0
 #define REG_REJECTED             1
@@ -79,6 +89,50 @@
 #define STATE_READY     1
 #define STATE_RUNNING   2
 #define STATE_GAMEOVER  3
+
+// =====================================================================
+// POWER-UP CONSTANTS
+// =====================================================================
+
+#define POWER_SONAR   1   // 3x3 area on an opponent -> number of ship cells, private
+#define POWER_SALVO   2   // 3 cells in a row/column on ONE opponent
+#define POWER_MINE    3   // hidden trap on one of your own WATER cells (placed before the game)
+#define POWER_REPAIR  4   // flip one of your hit cells back to intact
+#define POWER_SMOKE   5   // until your next turn, attacks on you are not reported to anyone
+#define POWER_SHIELD  6   // until your next turn, a 3x3 block of your grid can't be hit
+#define POWER_DOUBLE  7   // 2 cells (any two) on ONE opponent
+#define POWER_COUNT   7
+
+// How many DIFFERENT power-ups one team may use per game (each can be
+// used once). 7 = all of them. Set it to 3 to make teams CHOOSE.
+// The mine counts toward this budget.
+#define POWERUP_BUDGET 7
+
+#define NO_CELL 255       // "no mine placed"
+
+// PowerResultPacket.status (on the wire)
+#define PWR_STATUS_OK        0
+#define PWR_STATUS_REJECTED  1
+#define PWR_STATUS_JAMMED    2   // sonar was blocked by the target's smoke screen (power spent)
+
+// Internal-only return codes of tryPowerUp()
+#define PWR_OK                  0
+#define PWR_JAMMED              40   // success, but sonar was jammed (power + turn spent)
+#define PWR_FAIL_ID_MISMATCH    41
+#define PWR_FAIL_BAD_POWER      42
+#define PWR_FAIL_NOT_RUNNING    43
+#define PWR_FAIL_WRONG_TURN     44
+#define PWR_FAIL_DEAD           45
+#define PWR_FAIL_ALREADY_USED   46
+#define PWR_FAIL_BUDGET         47
+#define PWR_FAIL_BAD_TARGET     48
+#define PWR_FAIL_BAD_COORDS     49
+#define PWR_FAIL_ALREADY_HIT    50
+#define PWR_FAIL_BAD_SHAPE      51
+#define PWR_FAIL_NOT_SETUP      52   // mines can only be placed before the game starts
+#define PWR_FAIL_MINE_ON_SHIP   53
+#define PWR_FAIL_NOTHING_TO_REPAIR 54
+#define PWR_FAIL_NOT_REGISTERED 55
 
 // =====================================================================
 // SHIP PLACEMENT
@@ -145,6 +199,10 @@ inline bool validTeamName(const char *name) {
   return len > 0;
 }
 
+inline bool inGrid(int x, int y) {
+  return x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
+}
+
 // =====================================================================
 // TURN ORDER
 // =====================================================================
@@ -172,6 +230,96 @@ inline void advanceTurn(uint8_t &roundState, uint8_t &currentTurnIndex, bool eli
       currentTurnIndex = idx;
       return;
     }
+  }
+}
+
+// =====================================================================
+// POWER-UP STATE
+// =====================================================================
+// Everything the power-ups need to remember. All plain bytes so
+// central_node.ino can save it to flash as part of its snapshot.
+//
+// "One round" for SHIELD and SMOKE means: from the moment the owner
+// uses it until the owner's NEXT turn begins (i.e. every other team
+// gets exactly one turn against it).
+
+typedef struct __attribute__((packed)) {
+  uint8_t used[MAX_TEAMS];                              // bit (power-1) set = already used
+  uint8_t mineX[MAX_TEAMS], mineY[MAX_TEAMS];           // NO_CELL = none
+  uint8_t shieldOn[MAX_TEAMS];
+  uint8_t shieldX[MAX_TEAMS], shieldY[MAX_TEAMS];       // centre of the 3x3 block
+  uint8_t smokeOn[MAX_TEAMS];
+  uint8_t smokeMask[MAX_TEAMS][GRID_SIZE][GRID_SIZE];   // cells shot while smoked (hidden from the dashboard)
+  uint8_t skipNext[MAX_TEAMS];                          // lose the next turn (stepped on a mine)
+} PowerState;
+
+inline void resetPowerState(PowerState &ps) {
+  memset(&ps, 0, sizeof(ps));
+  for (int i = 0; i < MAX_TEAMS; i++) { ps.mineX[i] = NO_CELL; ps.mineY[i] = NO_CELL; }
+}
+
+inline int powerCount(uint8_t usedMask) {
+  int n = 0;
+  for (int b = 0; b < 8; b++) if (usedMask & (1u << b)) n++;
+  return n;
+}
+
+inline bool shieldCovers(const PowerState &ps, int team, int x, int y) {
+  if (!ps.shieldOn[team]) return false;
+  int dx = x - (int)ps.shieldX[team], dy = y - (int)ps.shieldY[team];
+  return dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1;
+}
+
+inline void clearSmoke(PowerState &ps, int team) {
+  ps.smokeOn[team] = 0;
+  memset(ps.smokeMask[team], 0, sizeof(ps.smokeMask[team]));
+}
+
+// What the DASHBOARD may show for one cell / one team's HP. While a team
+// is under smoke, cells shot at it stay hidden; once the smoke expires
+// the mask is cleared and the truth appears.
+inline uint8_t displayCell(const PowerState &ps, int team, int r, int c, uint8_t realValue) {
+  if (ps.smokeMask[team][r][c]) return (realValue == CELL_HIT) ? CELL_SHIP : CELL_WATER;
+  return realValue;
+}
+
+inline int displayRemaining(const PowerState &ps, int team, int remaining, const uint8_t grid[GRID_SIZE][GRID_SIZE]) {
+  int shown = remaining;
+  for (int r = 0; r < GRID_SIZE; r++)
+    for (int c = 0; c < GRID_SIZE; c++)
+      if (ps.smokeMask[team][r][c] && grid[r][c] == CELL_HIT) shown++;
+  return shown;
+}
+
+// Power-up aware turn advance. Same as advanceTurn(), plus:
+//  - when the turn reaches a team, that team's SHIELD and SMOKE expire
+//  - a team that stepped on a mine (skipNext) is passed over once
+//  - when the game ends, all shields/smoke drop so the final board is true
+inline void advanceTurnPS(uint8_t &roundState, uint8_t &currentTurnIndex,
+                          bool eliminated[MAX_TEAMS], bool registered[MAX_TEAMS], PowerState &ps) {
+  int aliveCount = 0;
+  for (int i = 0; i < MAX_TEAMS; i++) {
+    if (registered[i] && !eliminated[i]) aliveCount++;
+  }
+
+  if (aliveCount <= 1) {
+    roundState = STATE_GAMEOVER;
+    for (int i = 0; i < MAX_TEAMS; i++) { clearSmoke(ps, i); ps.shieldOn[i] = 0; }
+    return;
+  }
+
+  int idx = currentTurnIndex;
+  for (int tries = 0; tries < MAX_TEAMS * 2; tries++) {   // x2: a skipped team may need a second lap
+    idx = (idx + 1) % MAX_TEAMS;
+    if (!registered[idx] || eliminated[idx]) continue;
+
+    ps.shieldOn[idx] = 0;       // their protection ends the moment their turn comes round
+    clearSmoke(ps, idx);
+
+    if (ps.skipNext[idx]) { ps.skipNext[idx] = 0; continue; }
+
+    currentTurnIndex = idx;
+    return;
   }
 }
 
@@ -266,14 +414,72 @@ inline bool tryForceStart(uint8_t &roundState, uint8_t &currentTurnIndex, bool r
 }
 
 // =====================================================================
+// FIRING ONE SHOT (shared by normal attacks, Salvo and Double Attack)
+// =====================================================================
+// The caller has ALREADY checked: coordinates are on the grid and the
+// cell was not shot before. Returns the TRUE result (MISS / HIT / SUNK /
+// BLOCKED / MINE) and puts what the attacker is allowed to be told in
+// `reported` (differs only when the target is under SMOKE).
+//
+// ps may be nullptr (no power-ups) - then it's the classic behaviour.
+inline uint8_t fireAtCell(
+  int attackerIdx, int targetIdx, int x, int y,
+  uint8_t grid[MAX_TEAMS][GRID_SIZE][GRID_SIZE],
+  int remainingShips[MAX_TEAMS],
+  bool eliminated[MAX_TEAMS],
+  PowerState *ps,
+  uint8_t &reported
+) {
+  uint8_t actual;
+  uint8_t cell = grid[targetIdx][y][x];
+
+  if (ps && shieldCovers(*ps, targetIdx, x, y)) {
+    actual = RESULT_BLOCKED;                       // cell is NOT marked as shot
+  } else if (cell == CELL_WATER) {
+    grid[targetIdx][y][x] = CELL_MISS;
+    actual = RESULT_MISS;
+    if (ps && ps->mineX[targetIdx] == x && ps->mineY[targetIdx] == y) {
+      actual = RESULT_MINE;                        // BOOM: mine is used up, attacker loses a turn
+      ps->mineX[targetIdx] = NO_CELL;
+      ps->mineY[targetIdx] = NO_CELL;
+      ps->skipNext[attackerIdx] = 1;
+    }
+  } else {  // CELL_SHIP
+    grid[targetIdx][y][x] = CELL_HIT;
+    remainingShips[targetIdx]--;
+    if (remainingShips[targetIdx] <= 0) {
+      eliminated[targetIdx] = true;
+      actual = RESULT_SUNK;
+    } else {
+      actual = RESULT_HIT;
+    }
+  }
+
+  reported = actual;
+
+  if (ps && ps->smokeOn[targetIdx]) {
+    if (actual == RESULT_SUNK) {
+      clearSmoke(*ps, targetIdx);                  // an elimination can't be hidden - reveal everything
+    } else {
+      if (actual != RESULT_BLOCKED) ps->smokeMask[targetIdx][y][x] = 1;
+      reported = RESULT_UNKNOWN;
+    }
+  }
+  return actual;
+}
+
+// =====================================================================
 // ATTACKS
 // =====================================================================
 
 // Runs every attack-validation rule from the spec (all 11 checks) and,
 // on a valid attack, updates the grid/remaining-ships/eliminated/turn
-// state. Returns RESULT_MISS / RESULT_HIT / RESULT_SUNK / RESULT_INVALID.
-// Same division of responsibility as tryRegister(): the caller resolves
-// macTeam from the sender's MAC and handles all I/O afterwards.
+// state. Returns RESULT_MISS / HIT / SUNK / MINE / BLOCKED on success, or an
+// ATTACK_FAIL_* code. Same division of responsibility as tryRegister().
+//
+// Optional (v3): pass &powerState to enable shields, smoke and mines, and
+// &reported to learn what the attacker may be told (smoke hides it).
+// A BLOCKED shot is a VALID action: it uses the attacker's turn.
 inline uint8_t tryAttack(
   int macTeam,
   int claimedAttackerId,
@@ -285,7 +491,9 @@ inline uint8_t tryAttack(
   uint8_t grid[MAX_TEAMS][GRID_SIZE][GRID_SIZE],
   int remainingShips[MAX_TEAMS],
   bool eliminated[MAX_TEAMS],
-  bool registered[MAX_TEAMS]
+  bool registered[MAX_TEAMS],
+  PowerState *ps = nullptr,
+  uint8_t *reportedOut = nullptr
 ) {
   if (macTeam < 1 || macTeam > MAX_TEAMS) return ATTACK_FAIL_ID_MISMATCH;
   if (claimedAttackerId != macTeam) return ATTACK_FAIL_ID_MISMATCH;
@@ -305,23 +513,193 @@ inline uint8_t tryAttack(
   uint8_t cell = grid[targetIdx][y][x];
   if (cell == CELL_MISS || cell == CELL_HIT) return ATTACK_FAIL_ALREADY_HIT;
 
-  uint8_t resultCode;
-  if (cell == CELL_WATER) {
-    grid[targetIdx][y][x] = CELL_MISS;
-    resultCode = RESULT_MISS;
-  } else {  // CELL_SHIP
-    grid[targetIdx][y][x] = CELL_HIT;
-    remainingShips[targetIdx]--;
-    if (remainingShips[targetIdx] <= 0) {
-      eliminated[targetIdx] = true;
-      resultCode = RESULT_SUNK;
-    } else {
-      resultCode = RESULT_HIT;
-    }
+  uint8_t reported = RESULT_MISS;
+  uint8_t actual = fireAtCell(attackerIdx, targetIdx, x, y, grid, remainingShips, eliminated, ps, reported);
+  if (reportedOut) *reportedOut = reported;
+
+  if (ps) advanceTurnPS(roundState, currentTurnIndex, eliminated, registered, *ps);
+  else    advanceTurn(roundState, currentTurnIndex, eliminated, registered);
+  return actual;
+}
+
+// =====================================================================
+// POWER-UPS
+// =====================================================================
+
+// What happened, for central_node.ino to log and to send back.
+typedef struct {
+  uint8_t power;
+  uint8_t status;       // PWR_STATUS_* (goes on the wire)
+  uint8_t count;        // SONAR: ship cells found in the 3x3 area
+  uint8_t cells;        // SALVO = 3, DOUBLE = 2 (cells actually requested)
+  uint8_t actual[3];    // TRUE result per fired cell (organizer log only)
+  uint8_t reported[3];  // result per fired cell the attacker may see (RESULT_INVALID = not fired)
+} PowerOutcome;
+
+// n cells forming one straight, consecutive run in a single row or column.
+inline bool cellsInLine(const int xs[], const int ys[], int n) {
+  bool row = true, col = true;
+  for (int i = 1; i < n; i++) {
+    if (ys[i] != ys[0]) row = false;
+    if (xs[i] != xs[0]) col = false;
+  }
+  if (row == col) return false;            // scattered, or all the same cell
+  const int *v = row ? xs : ys;
+  int mn = v[0], mx = v[0];
+  for (int i = 1; i < n; i++) { if (v[i] < mn) mn = v[i]; if (v[i] > mx) mx = v[i]; }
+  if (mx - mn != n - 1) return false;
+  for (int i = 0; i < n; i++)
+    for (int j = i + 1; j < n; j++)
+      if (v[i] == v[j]) return false;
+  return true;
+}
+
+// Validates and applies one power-up request. The caller (central_node.ino)
+// resolves macTeam from the sender's MAC first, and does all I/O afterwards.
+//
+//   xs[]/ys[] meaning per power:
+//     SONAR   target + (xs[0],ys[0]) = CENTRE of the 3x3 area (clipped at the edge)
+//     SALVO   target + 3 cells that form a straight consecutive line
+//     DOUBLE  target + 2 different cells (anywhere)
+//     MINE    (xs[0],ys[0]) = one of YOUR OWN water cells; only before the game starts
+//     REPAIR  (xs[0],ys[0]) = one of YOUR OWN hit cells
+//     SHIELD  (xs[0],ys[0]) = CENTRE of the 3x3 block; must be 1..5 so all 9 cells exist
+//     SMOKE   nothing
+//
+// Every power except MINE needs YOUR turn and USES it. A rejected request
+// changes nothing and does not use the turn. Each power works once per game.
+// Returns PWR_OK / PWR_JAMMED on success, otherwise a PWR_FAIL_* code.
+inline uint8_t tryPowerUp(
+  int macTeam, int claimedId, int power, int targetId,
+  const int xs[3], const int ys[3],
+  uint8_t &roundState, uint8_t &currentTurnIndex,
+  uint8_t grid[MAX_TEAMS][GRID_SIZE][GRID_SIZE],
+  int remainingShips[MAX_TEAMS],
+  bool eliminated[MAX_TEAMS],
+  bool registered[MAX_TEAMS],
+  PowerState &ps,
+  PowerOutcome &out
+) {
+  memset(&out, 0, sizeof(out));
+  out.power = (uint8_t)power;
+  out.status = PWR_STATUS_REJECTED;
+  for (int i = 0; i < 3; i++) { out.actual[i] = RESULT_INVALID; out.reported[i] = RESULT_INVALID; }
+
+  if (macTeam < 1 || macTeam > MAX_TEAMS) return PWR_FAIL_ID_MISMATCH;
+  if (claimedId != macTeam) return PWR_FAIL_ID_MISMATCH;
+  if (power < 1 || power > POWER_COUNT) return PWR_FAIL_BAD_POWER;
+
+  const int me = macTeam - 1;
+  if (!registered[me]) return PWR_FAIL_NOT_REGISTERED;
+  const uint8_t bit = (uint8_t)(1u << (power - 1));
+
+  // ---- MINE: placed BEFORE the game, costs no turn ----
+  if (power == POWER_MINE) {
+    if (roundState != STATE_SETUP && roundState != STATE_READY) return PWR_FAIL_NOT_SETUP;
+    if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
+    if (grid[me][ys[0]][xs[0]] != CELL_WATER) return PWR_FAIL_MINE_ON_SHIP;
+    if (!(ps.used[me] & bit) && powerCount(ps.used[me]) >= POWERUP_BUDGET) return PWR_FAIL_BUDGET;
+    ps.mineX[me] = (uint8_t)xs[0];            // placing again simply moves it
+    ps.mineY[me] = (uint8_t)ys[0];
+    ps.used[me] |= bit;
+    out.status = PWR_STATUS_OK;
+    return PWR_OK;
   }
 
-  advanceTurn(roundState, currentTurnIndex, eliminated, registered);
-  return resultCode;
+  // ---- everything else: your turn, once per game ----
+  if (roundState != STATE_RUNNING) return PWR_FAIL_NOT_RUNNING;
+  if (me != currentTurnIndex) return PWR_FAIL_WRONG_TURN;
+  if (eliminated[me]) return PWR_FAIL_DEAD;
+  if (ps.used[me] & bit) return PWR_FAIL_ALREADY_USED;
+  if (powerCount(ps.used[me]) >= POWERUP_BUDGET) return PWR_FAIL_BUDGET;
+
+  int tIdx = -1;
+  if (power == POWER_SONAR || power == POWER_SALVO || power == POWER_DOUBLE) {
+    if (targetId < 1 || targetId > MAX_TEAMS) return PWR_FAIL_BAD_TARGET;
+    tIdx = targetId - 1;
+    if (tIdx == me || !registered[tIdx] || eliminated[tIdx]) return PWR_FAIL_BAD_TARGET;
+  }
+
+  uint8_t code = PWR_OK;
+
+  switch (power) {
+    case POWER_SONAR: {
+      if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
+      if (ps.smokeOn[tIdx]) {                 // smoke jams sonar; the power and the turn are spent
+        out.status = PWR_STATUS_JAMMED;
+        code = PWR_JAMMED;
+        break;
+      }
+      int found = 0;
+      for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) {
+          int cx = xs[0] + dx, cy = ys[0] + dy;
+          if (!inGrid(cx, cy)) continue;
+          uint8_t v = grid[tIdx][cy][cx];
+          if (v == CELL_SHIP || v == CELL_HIT) found++;   // a ship cell stays a ship cell once hit
+        }
+      out.count = (uint8_t)found;
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
+    case POWER_SALVO:
+    case POWER_DOUBLE: {
+      const int n = (power == POWER_SALVO) ? 3 : 2;
+      for (int i = 0; i < n; i++)
+        if (!inGrid(xs[i], ys[i])) return PWR_FAIL_BAD_COORDS;
+      if (power == POWER_SALVO) {
+        if (!cellsInLine(xs, ys, 3)) return PWR_FAIL_BAD_SHAPE;
+      } else {
+        if (xs[0] == xs[1] && ys[0] == ys[1]) return PWR_FAIL_BAD_SHAPE;
+      }
+      for (int i = 0; i < n; i++) {
+        uint8_t v = grid[tIdx][ys[i]][xs[i]];
+        if (v == CELL_MISS || v == CELL_HIT) return PWR_FAIL_ALREADY_HIT;   // whole action rejected
+      }
+
+      out.cells = (uint8_t)n;
+      for (int i = 0; i < n; i++) {
+        if (eliminated[tIdx]) break;          // an earlier cell sank them - the rest isn't fired
+        out.actual[i] = fireAtCell(me, tIdx, xs[i], ys[i], grid, remainingShips, eliminated, &ps, out.reported[i]);
+      }
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
+    case POWER_REPAIR: {
+      if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
+      if (grid[me][ys[0]][xs[0]] != CELL_HIT) return PWR_FAIL_NOTHING_TO_REPAIR;
+      grid[me][ys[0]][xs[0]] = CELL_SHIP;
+      remainingShips[me]++;
+      ps.smokeMask[me][ys[0]][xs[0]] = 0;
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
+    case POWER_SHIELD: {
+      if (xs[0] < 1 || xs[0] > GRID_SIZE - 2 || ys[0] < 1 || ys[0] > GRID_SIZE - 2) return PWR_FAIL_BAD_COORDS;
+      ps.shieldOn[me] = 1;
+      ps.shieldX[me] = (uint8_t)xs[0];
+      ps.shieldY[me] = (uint8_t)ys[0];
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
+    case POWER_SMOKE: {
+      clearSmoke(ps, me);
+      ps.smokeOn[me] = 1;
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
+    default:
+      return PWR_FAIL_BAD_POWER;
+  }
+
+  ps.used[me] |= bit;
+  advanceTurnPS(roundState, currentTurnIndex, eliminated, registered, ps);
+  return code;
 }
 
 #endif  // GAME_LOGIC_H
