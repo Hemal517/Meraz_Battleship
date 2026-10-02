@@ -183,7 +183,7 @@ Preferences prefs;
 
 #define PREFS_NAMESPACE "battleship"
 #define SAVE_MAGIC       0xBA77CAFE
-#define SAVE_VERSION     1  // bump this if SavedState's layout ever changes
+#define SAVE_VERSION     2  // bump this if SavedState's layout ever changes
 
 typedef struct __attribute__((packed)) {
   uint32_t magic;

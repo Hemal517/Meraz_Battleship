@@ -136,9 +136,9 @@ void testShipValidation() {
   check(!buildAndValidateGrid(overlap, grid), "overlapping ships are rejected");
 
   ShipPlacement offEdge[3] = {
-    {1, 4, 4, ORIENT_HORIZONTAL}, {3, 3, 0, ORIENT_HORIZONTAL}, {5, 1, 0, ORIENT_HORIZONTAL}
+    {1, 6, 6, ORIENT_HORIZONTAL}, {3, 0, 0, ORIENT_HORIZONTAL}, {5, 3, 1, ORIENT_HORIZONTAL}
   };
-  // the size-5 ship starting at x=1 going horizontal covers x=1..5 - x=5 is off the 0-4 grid
+  // the size-5 ship starting at x=3 going horizontal covers x=3..7 - x=7 is off the 0-6 grid
   check(!buildAndValidateGrid(offEdge, grid), "a ship running off the edge of the grid is rejected");
 
   ShipPlacement badOrientation[3] = {
@@ -152,6 +152,23 @@ void testShipValidation() {
     {1, 4, 4, ORIENT_HORIZONTAL}, {3, 0, 0, ORIENT_HORIZONTAL}, {5, 3, 0, ORIENT_VERTICAL}
   };
   check(buildAndValidateGrid(touching, grid), "ships that touch (but don't overlap) are still accepted");
+
+  // The grid is 7x7: the far edge (index 6) is legal, index 7 is not.
+  ShipPlacement farCorner[3] = {
+    {1, 6, 6, ORIENT_HORIZONTAL}, {3, 4, 0, ORIENT_HORIZONTAL}, {5, 0, 2, ORIENT_VERTICAL}
+  };
+  check(GRID_SIZE == 7, "the grid is 7x7");
+  check(buildAndValidateGrid(farCorner, grid), "ships can use the far edge of the 7x7 grid (index 6)");
+
+  ShipPlacement pastEdge[3] = {
+    {1, 7, 0, ORIENT_HORIZONTAL}, {3, 0, 0, ORIENT_HORIZONTAL}, {5, 0, 2, ORIENT_HORIZONTAL}
+  };
+  check(!buildAndValidateGrid(pastEdge, grid), "a ship starting at index 7 is rejected");
+
+  ShipPlacement long5Right[3] = {
+    {1, 0, 6, ORIENT_HORIZONTAL}, {3, 0, 0, ORIENT_HORIZONTAL}, {5, 3, 3, ORIENT_HORIZONTAL}
+  };
+  check(!buildAndValidateGrid(long5Right, grid), "a size-5 ship at x=3 runs off the right edge (3..7) and is rejected");
 }
 
 // =====================================================================
@@ -248,6 +265,11 @@ void testAttacks() {
   r = tryAttack(1, 1, 2, 9, 9, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
   check(r == ATTACK_FAIL_BAD_COORDS, "out-of-range coordinates are rejected");
 
+  r = tryAttack(1, 1, 2, 7, 0, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
+  check(r == ATTACK_FAIL_BAD_COORDS, "x=7 is outside the 7x7 grid");
+  r = tryAttack(1, 1, 2, 0, 7, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
+  check(r == ATTACK_FAIL_BAD_COORDS, "y=7 is outside the 7x7 grid");
+
   // (1,1) is water in the default layout - valid MISS.
   r = tryAttack(1, 1, 2, 1, 1, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
   check(r == RESULT_MISS, "attacking a water cell is a MISS");
@@ -261,6 +283,11 @@ void testAttacks() {
   r = tryAttack(1, 1, 2, 2, 4, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
   check(r == RESULT_HIT, "attacking a ship cell is a HIT");
   check(s.remainingShips[1] == 8, "remaining ship count decreases after a hit");
+
+  // the far corner (6,6) is a real cell on the 7x7 grid - water in the default layout
+  s.currentTurnIndex = 0;
+  r = tryAttack(1, 1, 2, 6, 6, s.roundState, s.currentTurnIndex, s.grid, s.remainingShips, s.eliminated, s.registered);
+  check(r == RESULT_MISS, "attacking the far corner (6,6) is a valid shot");
 
   // an eliminated/unregistered target should be rejected too
   s.eliminated[2] = true;  // pretend team 3 is already eliminated
@@ -335,8 +362,21 @@ void testDiagonalShips() {
   };
   check(buildAndValidateGrid(shortDiag, grid), "a size-3 diagonal in the middle of the grid is accepted");
 
+  // On the 7x7 grid a size-5 diagonal no longer has to run corner to corner.
+  ShipPlacement midDiagDown[3] = {
+    {1, 6, 0, ORIENT_HORIZONTAL}, {3, 0, 6, ORIENT_HORIZONTAL}, {5, 1, 1, ORIENT_DIAG_DOWN}
+  };
+  check(buildAndValidateGrid(midDiagDown, grid), "a size-5 down-right diagonal can start at (1,1)");
+  check(grid[1][1] == CELL_SHIP && grid[5][5] == CELL_SHIP, "the (1,1) diagonal covers (1,1) through (5,5)");
+
+  ShipPlacement midDiagUp[3] = {
+    {1, 6, 6, ORIENT_HORIZONTAL}, {3, 0, 0, ORIENT_HORIZONTAL}, {5, 1, 5, ORIENT_DIAG_UP}
+  };
+  check(buildAndValidateGrid(midDiagUp, grid), "a size-5 up-right diagonal can start at (1,5)");
+  check(grid[5][1] == CELL_SHIP && grid[1][5] == CELL_SHIP, "the (1,5) diagonal covers (1,5) through (5,1)");
+
   ShipPlacement runsOffRight[3] = {
-    {1, 4, 4, ORIENT_HORIZONTAL}, {3, 0, 4, ORIENT_HORIZONTAL}, {5, 1, 0, ORIENT_DIAG_DOWN}
+    {1, 4, 4, ORIENT_HORIZONTAL}, {3, 0, 4, ORIENT_HORIZONTAL}, {5, 3, 0, ORIENT_DIAG_DOWN}
   };
   check(!buildAndValidateGrid(runsOffRight, grid), "a diagonal running off the right/bottom edge is rejected");
 

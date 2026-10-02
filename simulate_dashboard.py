@@ -87,6 +87,7 @@ print("  UI loaded from %s (%s chars)" % (os.path.basename(DASHBOARD_PY), format
 TEAM_NAMES = ["CIRCUIT BREAKERS", "OHM RAIDERS", "FLUX CAPACITORS", "NULL POINTERS"]
 # cells are named R<row> C<col> - both axes are numbered in the UI
 SHIPS = 9
+GRID = 7  # board is GRID x GRID
 
 app = Flask(__name__)
 lock = threading.Lock()
@@ -101,7 +102,7 @@ def blank_team(i):
         "registered": False,
         "eliminated": False,
         "remaining": SHIPS,
-        "grid": [[0] * 5 for _ in range(5)],
+        "grid": [[0] * GRID for _ in range(GRID)],
     }
 
 
@@ -138,7 +139,7 @@ def push_state():
 def place_ships(t):
     n = 0
     while n < SHIPS:
-        r, c = random.randrange(5), random.randrange(5)
+        r, c = random.randrange(GRID), random.randrange(GRID)
         if t["grid"][r][c] == 0:
             t["grid"][r][c] = 1
             n += 1
@@ -220,7 +221,7 @@ def game_loop():
                 else:
                     foe = random.choice(foes)
                     q = [(r, c) for (r, c) in hunt[foe["id"]] if foe["grid"][r][c] < 2]
-                    openc = [(r, c) for r in range(5) for c in range(5) if foe["grid"][r][c] < 2]
+                    openc = [(r, c) for r in range(GRID) for c in range(GRID) if foe["grid"][r][c] < 2]
                     if not openc:
                         next_turn()
                         txt = None
@@ -234,7 +235,7 @@ def game_loop():
                             foe["remaining"] -= 1
                             txt = f"{me['name']} hit {foe['name']} at {coord}"
                             for a, b in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                                if 0 <= a < 5 and 0 <= b < 5 and foe["grid"][a][b] < 2:
+                                if 0 <= a < GRID and 0 <= b < GRID and foe["grid"][a][b] < 2:
                                     hunt[foe["id"]].append((a, b))
                         else:
                             txt = f"{me['name']} missed {foe['name']} at {coord}"

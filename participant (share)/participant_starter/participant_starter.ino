@@ -31,7 +31,7 @@ uint8_t centralMac[6] = {0, 0, 0, 0, 0, 0};  // Central's MAC address
 // =====================================================================
 // MESSAGE FORMATS (given - these must match Central byte for byte)
 // =====================================================================
-#define GRID_SIZE 5
+#define GRID_SIZE 7
 
 #define ORIENT_HORIZONTAL 0   // grows rightward    (dx=+1, dy= 0)
 #define ORIENT_VERTICAL   1   // grows downward     (dx= 0, dy=+1)

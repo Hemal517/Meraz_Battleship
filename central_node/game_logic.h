@@ -24,7 +24,7 @@
 // =====================================================================
 
 #define MAX_TEAMS  4
-#define GRID_SIZE  5
+#define GRID_SIZE  7
 
 // Ship directions. start_x/start_y is always the ship's FIRST cell and
 // the ship grows from there:
@@ -86,15 +86,15 @@
 
 typedef struct __attribute__((packed)) {
   uint8_t ship_len;     // 1, 3, or 5
-  uint8_t start_x;      // 0-4
-  uint8_t start_y;      // 0-4
+  uint8_t start_x;      // 0-6
+  uint8_t start_y;      // 0-6
   uint8_t orientation;  // ORIENT_HORIZONTAL / VERTICAL / DIAG_DOWN / DIAG_UP
 } ShipPlacement;
 
 // Builds outGrid from 3 ship placements. Returns true only if the
 // layout is fully legal: exactly one ship of length 1, one of 3, one
 // of 5, straight lines only (horizontal, vertical, or diagonal), fits
-// in the 5x5 grid, no overlaps.
+// in the 7x7 grid, no overlaps.
 inline bool buildAndValidateGrid(ShipPlacement ships[3], uint8_t outGrid[GRID_SIZE][GRID_SIZE]) {
   for (int r = 0; r < GRID_SIZE; r++)
     for (int c = 0; c < GRID_SIZE; c++)

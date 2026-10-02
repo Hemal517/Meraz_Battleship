@@ -88,8 +88,8 @@
 // One ship: how long it is, where it starts, and which way it points.
 typedef struct __attribute__((packed)) {
   uint8_t ship_len;     // 1, 3, or 5
-  uint8_t start_x;      // column, 0-4
-  uint8_t start_y;      // row, 0-4
+  uint8_t start_x;      // column, 0-6
+  uint8_t start_y;      // row, 0-6
   uint8_t orientation;  // ORIENT_HORIZONTAL / VERTICAL / DIAG_DOWN / DIAG_UP
 } ShipPlacement;
 
@@ -101,13 +101,13 @@ typedef struct __attribute__((packed)) {
 #define MY_TEAM_ID 2
 const char *MY_TEAM_NAME = "TRI2";
 
-// Your 3 ships. Grid is 5x5, x = column (0-4), y = row (0-4).
+// Your 3 ships. Grid is 7x7, x = column (0-6), y = row (0-6).
 // Rules: exactly one ship of length 1, one of length 3, one of length
 // 5; straight lines only (horizontal, vertical or diagonal); must fit
 // inside the grid; ships must NOT overlap each other (touching is fine).
 // Diagonal ships: ORIENT_DIAG_DOWN starts at the top-left end and goes
 // down-right; ORIENT_DIAG_UP starts at the bottom-left end and goes
-// up-right. On a 5x5 grid a size-5 diagonal only fits corner to corner.
+// up-right. A size-5 diagonal needs a 5x5 block of free cells.
 //
 // Example below (already valid, feel free to leave as-is for testing):
 //   Ship 1 (size 1): single cell at (2,4)
@@ -172,7 +172,7 @@ uint8_t opponentIds[3];  // the 3 team IDs that aren't MY_TEAM_ID, filled in by 
 // =====================================================================
 
 #define MAX_TEAMS  4
-#define GRID_SIZE  5
+#define GRID_SIZE  7
 
 // FeedbackPacket.result_code (must match central_node.ino)
 #define RESULT_MISS     0
@@ -556,7 +556,7 @@ void attemptManualAttack(uint8_t targetTeam, uint8_t x, uint8_t y) {
     return;
   }
   if (x >= GRID_SIZE || y >= GRID_SIZE) {
-    Serial.println("Invalid coordinates - must be 0-4.");
+    Serial.println("Invalid coordinates - must be 0-6.");
     return;
   }
 
@@ -771,19 +771,24 @@ const char *roundStateName(uint8_t s) {
 
 #define UI_RESULT_DISPLAY_MS 1500
 
-#define UI_TARGET_BTN_Y   40
-#define UI_TARGET_BTN_H   36
+#define UI_TARGET_BTN_Y   36
+#define UI_TARGET_BTN_H   30
 #define UI_TARGET_BTN_W   70
 #define UI_TARGET_GAP     10
 
-#define UI_GRID_X         20
-#define UI_GRID_Y         90
-#define UI_CELL_SIZE      40
+#define UI_GRID_X         22
+#define UI_GRID_Y         74
+#define UI_CELL_SIZE      28
 
 #define UI_ATTACK_BTN_X   70
-#define UI_ATTACK_BTN_Y   292
+#define UI_ATTACK_BTN_Y   280
 #define UI_ATTACK_BTN_W   100
-#define UI_ATTACK_BTN_H   26
+#define UI_ATTACK_BTN_H   28
+
+// The 7x7 grid must fit between the target buttons and the ATTACK button on the 240x320 screen.
+static_assert(UI_GRID_X + GRID_SIZE * UI_CELL_SIZE <= 240, "grid is too wide for the screen");
+static_assert(UI_GRID_Y + GRID_SIZE * UI_CELL_SIZE < UI_ATTACK_BTN_Y, "grid overlaps the ATTACK button");
+static_assert(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H <= 320, "ATTACK button is off the screen");
 
 unsigned long uiResultUntil = 0;   // while millis() < this, a result banner is showing
 uint8_t uiPendingScreen = 0;       // 0 = none, 1 = your turn, 2 = waiting, 3 = message
@@ -952,7 +957,7 @@ void uiDrawYourTurn() {
 
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(1);
-  tft.setCursor(10, UI_TARGET_BTN_Y - 14);
+  tft.setCursor(10, UI_TARGET_BTN_Y - 10);
   tft.print("Select target:");
 
   for (int i = 0; i < 3; i++) drawTargetButton(i, false);
@@ -974,7 +979,7 @@ void drawTargetButton(int i, bool selected) {
   tft.setTextColor(textColor, fillColor);
   tft.setTextSize(2);
   int16_t tw = tft.textWidth(label);
-  tft.setCursor(x + (UI_TARGET_BTN_W - tw) / 2, y + 10);
+  tft.setCursor(x + (UI_TARGET_BTN_W - tw) / 2, y + (UI_TARGET_BTN_H - 16) / 2);
   tft.print(label);
 }
 

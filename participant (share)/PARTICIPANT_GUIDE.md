@@ -22,7 +22,7 @@ Use an ESP32 board. The two sides talk over **ESP-NOW**, so no router or interne
 
 ## 2. The grid and your fleet
 
-- The grid is **5 x 5**. `x` is the column (0 to 4, left to right) and `y` is the row (0 to 4, top to bottom).
+- The grid is **7 x 7**. `x` is the column (0 to 6, left to right) and `y` is the row (0 to 6, top to bottom).
 - You have **exactly three ships, of sizes 1, 3 and 5**.
 - A ship is described by its **first cell** (`start_x`, `start_y`), a **length**, and a **direction**. It grows from the first cell in that direction:
 
@@ -39,7 +39,7 @@ Use an ESP32 board. The two sides talk over **ESP-NOW**, so no router or interne
 - the sizes aren't exactly one each of 1, 3 and 5,
 - the direction isn't 0 to 3.
 
-A size-5 diagonal only fits corner to corner: `(0,0)` with direction 2, or `(0,4)` with direction 3.
+A size-5 diagonal needs a 5 x 5 block of free cells: direction 2 can start anywhere from `(0,0)` to `(2,2)`, and direction 3 anywhere from `(0,4)` to `(2,6)`.
 
 Your fleet is secret. Nobody but Central sees it, so choose your layout however you like, whether fixed, random, or computed.
 

@@ -28,7 +28,7 @@ shows the whole war on a projector. Everything runs offline over ESP-NOW
 | `dashboard.py` | Projector dashboard + organizer buttons (START, FORCE START, SKIP TURN, RESET) + per-round match logs. | laptop |
 | `virtual_display.py` | A fake 240×320 touch screen in your browser, fed by a team board over USB. | laptop |
 | `mock_central.py` | A fake Central so you can test `dashboard.py` with no ESP32. | laptop |
-| `central_logic_test.cpp` | Desktop test of the rules (66 checks, no hardware). | laptop |
+| `central_logic_test.cpp` | Desktop test of the rules (77 checks, no hardware). | laptop |
 
 ### Participant side (what you hand out)
 | File | What it is |
@@ -79,7 +79,7 @@ Work through these in order. Each level needs a bit more hardware than the last.
 g++ -std=c++11 -Wall -Wextra central_logic_test.cpp -o central_logic_test
 ./central_logic_test
 ```
-Expect `66/66 checks passed`. This runs the *same* `game_logic.h` the Central uses.
+Expect `77/77 checks passed`. This runs the *same* `game_logic.h` the Central uses.
 
 **b) Test the dashboard with a fake Central.** `pip install flask pyserial`, then
 create a virtual serial pair (Linux/Mac: `socat -d -d pty,raw,echo=0 pty,raw,echo=0`;
@@ -138,8 +138,8 @@ Follow the four steps under "When the real displays arrive" above.
 7. **Set each board's `myShips[3]`** (or keep the built-in example, which is valid).
    Ships may be horizontal, vertical or **diagonal**: `ORIENT_DIAG_DOWN` goes
    down-right from the start cell, `ORIENT_DIAG_UP` goes up-right. `start_x`/
-   `start_y` is always the ship's first cell. On the 5×5 grid a size-5 diagonal
-   only fits corner to corner.
+   `start_y` is always the ship's first cell. The grid is 7×7 (x and y run 0–6), so a size-5
+   diagonal can start anywhere a 5×5 block of free cells fits.
 8. **`ESPNOW_CHANNEL`** must be identical on all boards (default `1`).
 9. **Re-upload** `central_node.ino` (with `game_logic.h` in the same folder) and
    each team board with its own config.
@@ -227,6 +227,6 @@ between matches. The first option is far easier.
 - Persistent per-round match logs; Central power-loss protection (state saved to flash)
 - ESP32 core 2.x/3.x compatibility in every sketch
 - `FORCE_START` (play with 2–3 teams) and diagonal ships
-- All rules in one shared header, with a hardware-free test (66 checks)
+- All rules in one shared header, with a hardware-free test (77 checks)
 - Mock Central, virtual touch display, and `DEMO` commands for hardware-free testing
 - Participant kit (skeleton + guide) so participants build their own radio side

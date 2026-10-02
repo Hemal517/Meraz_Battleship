@@ -49,20 +49,20 @@ SCALE = 1.5  # 1.5x zoom -> 360x480 window for comfortable desktop viewing
 
 UI_RESULT_DISPLAY_MS = 1500
 
-UI_TARGET_BTN_Y = 40
-UI_TARGET_BTN_H = 36
+UI_TARGET_BTN_Y = 36
+UI_TARGET_BTN_H = 30
 UI_TARGET_BTN_W = 70
 UI_TARGET_GAP   = 10
 
-UI_GRID_X       = 20
-UI_GRID_Y       = 90
-UI_CELL_SIZE    = 40
-GRID_SIZE       = 5
+UI_GRID_X       = 22
+UI_GRID_Y       = 74
+UI_CELL_SIZE    = 28
+GRID_SIZE       = 7
 
 UI_ATTACK_BTN_X = 70
-UI_ATTACK_BTN_Y = 292
+UI_ATTACK_BTN_Y = 280
 UI_ATTACK_BTN_W = 100
-UI_ATTACK_BTN_H = 26
+UI_ATTACK_BTN_H = 28
 
 # Colors matching TFT_eSPI
 COLOR_BLACK     = "#000000"
@@ -502,7 +502,7 @@ class VirtualTFTDisplay(tk.Tk):
             self.canvas.create_text(sx(bx + UI_TARGET_BTN_W // 2), sy(by + UI_TARGET_BTN_H // 2),
                                     text=f"T{tid}", fill=text_c, font=("Arial", int(12 * SCALE), "bold"))
 
-        # 5x5 Grid
+        # 7x7 Grid
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 gx = UI_GRID_X + c * UI_CELL_SIZE
@@ -516,7 +516,7 @@ class VirtualTFTDisplay(tk.Tk):
                                             outline=COLOR_WHITE, width=1)
 
         # Coordinate helper labels (1-5 columns, 1-5 rows)
-        for c, col_letter in enumerate(["1", "2", "3", "4", "5"]):
+        for c, col_letter in enumerate(str(i + 1) for i in range(GRID_SIZE)):
             gx = UI_GRID_X + c * UI_CELL_SIZE + (UI_CELL_SIZE // 2)
             self.canvas.create_text(sx(gx), sy(UI_GRID_Y - 8), text=col_letter, fill="#a0aec0", font=("Arial", int(7 * SCALE)))
         for r in range(GRID_SIZE):
@@ -535,7 +535,7 @@ class VirtualTFTDisplay(tk.Tk):
 
         # In-flight message
         if self.attack_in_flight:
-            self.canvas.create_text(sx(120), sy(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H + 12),
+            self.canvas.create_text(sx(120), sy(UI_ATTACK_BTN_Y + UI_ATTACK_BTN_H + 6),
                                     text="Sent - waiting for result...", fill=COLOR_WHITE, font=("Arial", int(8 * SCALE)))
 
     # =====================================================================

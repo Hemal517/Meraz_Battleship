@@ -33,7 +33,7 @@ Two things worth knowing about how it stays in sync with Central:
   2. The full grids only travel over Serial when Central answers a
      GET_STATE command, so this script polls GET_STATE every couple of
      seconds in the background (on top of requesting it once on
-     startup/reconnect). This keeps the 5x5 grids in sync without
+     startup/reconnect). This keeps the 7x7 grids in sync without
      needing any changes to central_node.ino, at the cost of the grid
      view lagging an event by at most ~2 seconds - fine for a
      turn-based, human-paced game.
@@ -667,7 +667,7 @@ body.perf .blur{backdrop-filter:none!important}
 }
 .board{
   display:grid;gap:.34em;font-size:clamp(9px,1.5vmin,17px);
-  grid-template-columns:1.35em repeat(5,1fr);grid-template-rows:1.35em repeat(5,1fr);
+  grid-template-columns:1.35em repeat(7,1fr);grid-template-rows:1.35em repeat(7,1fr);
   aspect-ratio:1/1;height:100%;max-width:100%;max-height:100%;
   padding:.5em .55em;border-radius:12px;
   background:rgba(2,5,13,.88);border:1px solid rgba(255,255,255,.07);
@@ -902,12 +902,13 @@ body.demo .demoflag{display:block}
      GET  /api/state  -> {round_state,current_turn,teams[],log[],central_connected}
      GET  /events     -> SSE of {type:"state"|"event"|"conn", ...}
      POST /api/command {cmd:"START"|"FORCE_START"|"SKIP_TURN"|"RESET"|"GET_STATE"}
-   Team object: {id,name,registered,eliminated,remaining,grid[5][5]}
+   Team object: {id,name,registered,eliminated,remaining,grid[7][7]}
    Cell codes : 0 water, 1 ship (hidden), 2 miss, 3 hit
    ===================================================================== */
 
 const COLORS = {1:'#27e6ff',2:'#ff3d84',3:'#b06bff',4:'#3dff88'};
-const AXIS   = ['1','2','3','4','5'];          // both axes are numbered
+const GRID   = 7;                               // board is GRID x GRID cells
+const AXIS   = Array.from({length:GRID},(_,i)=>String(i+1));   // both axes are numbered
 const coordOf = (r,c) => 'R'+(r+1)+' C'+(c+1);  // how a cell is named in the UI
 const PHASES = {0:'SETUP',1:'READY',2:'LIVE',3:'GAME OVER'};
 const SHIPS  = 9;
@@ -1071,9 +1072,9 @@ const UI = {
       b.appendChild(el('div','lab'));
       AXIS.forEach(L=>b.appendChild(el('div','lab',L)));
       const cells=[];
-      for(let r=0;r<5;r++){
+      for(let r=0;r<GRID;r++){
         b.appendChild(el('div','lab',String(r+1)));
-        for(let col=0;col<5;col++){
+        for(let col=0;col<GRID;col++){
           const cell=el('div','cell'); cell.appendChild(el('div','ring'));
           b.appendChild(cell); cells.push(cell);
         }
@@ -1146,15 +1147,15 @@ const UI = {
       let inc=0,myHits=0;
       const prev=this.prevGrid[id];
       const flat=[];
-      for(let r=0;r<5;r++) for(let c=0;c<5;c++){
+      for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++){
         const v = grid && grid[r] ? (grid[r][c]|0) : 0;
         flat.push(v);
-        const cell=P.cells[r*5+c];
+        const cell=P.cells[r*GRID+c];
         let cls='cell';
         if(v===3){cls+=' hit'; inc++; myHits++;}
         else if(v===2){cls+=' miss'; inc++;}
         else if(v===1){cls+=' ship'+(this.reveal?' reveal':'');}
-        if(prev && prev[r*5+c]!==v && (v===2||v===3) && !first){
+        if(prev && prev[r*GRID+c]!==v && (v===2||v===3) && !first){
           cls+=' fresh';
           const coord=coordOf(r,c);
           const rc=cell.getBoundingClientRect();
@@ -1475,9 +1476,9 @@ const Demo={
       id:id,name:'',registered:false,eliminated:false,remaining:SHIPS,grid:this.blank()})),log:[]};
     this.phaseTick=0; this.push('Game reset - waiting for teams to register'); this.flush();
   },
-  blank(){ return Array.from({length:5},()=>Array(5).fill(0)); },
+  blank(){ return Array.from({length:GRID},()=>Array(GRID).fill(0)); },
   place(t){
-    let n=0; while(n<SHIPS){ const r=(Math.random()*5)|0,c=(Math.random()*5)|0;
+    let n=0; while(n<SHIPS){ const r=(Math.random()*GRID)|0,c=(Math.random()*GRID)|0;
       if(t.grid[r][c]===0){t.grid[r][c]=1;n++;} } },
   push(x){ this.s.log.push(x); this.s.log=this.s.log.slice(-20); UI.pushLog(x,true); },
   flush(){ UI.apply(JSON.parse(JSON.stringify(Object.assign({type:'state',central_connected:true},this.s)))); },
@@ -1509,7 +1510,7 @@ const Demo={
       const foes=s.teams.filter(t=>t.registered&&!t.eliminated&&t.id!==s.current_turn);
       if(!foes.length){ this.next(); this.flush(); return; }
       const foe=foes[(Math.random()*foes.length)|0];
-      const open=[]; for(let r=0;r<5;r++) for(let c=0;c<5;c++) if(foe.grid[r][c]<2) open.push([r,c]);
+      const open=[]; for(let r=0;r<GRID;r++) for(let c=0;c<GRID;c++) if(foe.grid[r][c]<2) open.push([r,c]);
       if(!open.length){ this.next(); this.flush(); return; }
       /* hunt/target AI: after a hit, probe next to it - keeps the demo moving */
       this.hunt=this.hunt||{};
@@ -1523,7 +1524,7 @@ const Demo={
       const coord=coordOf(r,c);
       if(isHit){ foe.remaining--; this.push(me.name+' hit '+foe.name+' at '+coord);
         [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([a,b])=>{
-          if(a>=0&&a<5&&b>=0&&b<5&&foe.grid[a][b]<2) this.hunt[foe.id].push([a,b]); }); }
+          if(a>=0&&a<GRID&&b>=0&&b<GRID&&foe.grid[a][b]<2) this.hunt[foe.id].push([a,b]); }); }
       else this.push(me.name+' missed '+foe.name+' at '+coord);
       if(foe.remaining<=0&&!foe.eliminated){ foe.eliminated=true; this.push(foe.name+' eliminated'); }
       this.next();

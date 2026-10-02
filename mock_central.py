@@ -71,7 +71,7 @@ MOCK_PORT = "/dev/pts/3"  # TODO: change to your half of the virtual port pair
 BAUD_RATE = 115200
 
 MAX_TEAMS = 4
-GRID_SIZE = 5
+GRID_SIZE = 7
 
 CELL_WATER, CELL_SHIP, CELL_MISS, CELL_HIT = 0, 1, 2, 3
 STATE_SETUP, STATE_READY, STATE_RUNNING, STATE_GAMEOVER = 0, 1, 2, 3
