@@ -1,5 +1,5 @@
 /* =====================================================================
-   MERAZ BATTLESHIP - CENTRAL NODE   (v3: power-ups)
+   MERAZ BATTLESHIP - CENTRAL NODE   (v4: loadouts)
    =====================================================================
    This ESP32 is the ONLY authority for the game. It owns all four
    grids, all turn logic, all elimination logic, and all round state.
@@ -10,20 +10,28 @@
    1) Registration carries 3 explicit ship placements; Central builds
       the grid itself.
    2) Packet type is detected by BYTE LENGTH, so no type byte is needed:
-        Central receives : Registration 33, Attack 4, PowerUp 9
+        Central receives : Registration 34, Attack 4, PowerUp 9
         Boards   receive : RegAck 1, TurnUpdate 2, Feedback 4, PowerResult 7
       Every size a given board can receive is different. KEEP IT THAT WAY
       if you ever add a packet.
    3) Power-loss protection: every state change is saved to flash.
    4) Diagonal ships (rules live in game_logic.h).
-   5) POWER-UPS (new): Sonar, Salvo, Mine, Repair, Smoke, Shield, Double.
+   5) POWER-UPS: Sonar, Salvo, Mine, Repair, Smoke, Shield, Double.
       All rules are in game_logic.h (tryPowerUp / tryAttack). This file
       only does the radio, logging, flash and dashboard JSON.
+   6) LOADOUTS (v4): before registering, every team picks 2 attack powers
+      (Sonar / Salvo / Mine / Double) and 1 defence power (Smoke / Repair)
+      and sends them as ONE extra byte at the end of the registration
+      packet (33 -> 34 bytes). Shield and the normal strike are compulsory.
+      Each chosen power can be used 2 times; Shield is unlimited but not on
+      two turns in a row. Mines are placed DURING the game and use the turn.
 
    WHAT THE PUBLIC DASHBOARD MAY AND MAY NOT SEE
       - Sonar results go ONLY to the user. The public log says "used SONAR".
-      - Mine positions are never printed in JSON or the public log.
-        (The organizer sees them in the Serial Monitor: GRID / STATUS.)
+      - Mine positions are never printed in JSON or the public log; nor
+        are loadouts (the public log only says that a team armed a mine,
+        like it says "used SONAR"). The organizer sees positions and
+        loadouts in the Serial Monitor: GRID / STATUS.
       - Shield position is never published; the dashboard only learns
         THAT a shield is up ("shield": true).
       - While a team is under SMOKE, the JSON shows its board as if the
@@ -78,7 +86,8 @@ typedef struct __attribute__((packed)) {
   uint8_t team_id;
   char team_name[20];
   ShipPlacement ships[3];
-} RegistrationPacket;   // 33 bytes
+  uint8_t loadout;       // v4: chosen powers, bit (power-1) set - see LOADOUT_* in game_logic.h
+} RegistrationPacket;   // 34 bytes
 
 typedef struct __attribute__((packed)) {
   uint8_t status;        // REG_* code
@@ -122,7 +131,7 @@ typedef struct __attribute__((packed)) {
   uint8_t result[3];     // SALVO / DOUBLE: result per cell (RESULT_*; RESULT_INVALID = not fired)
 } PowerResultPacket;     // 7 bytes
 
-static_assert(sizeof(RegistrationPacket) == 33, "RegistrationPacket must be 33 bytes");
+static_assert(sizeof(RegistrationPacket) == 34, "RegistrationPacket must be 34 bytes");
 static_assert(sizeof(AttackPacket) == 4, "AttackPacket must be 4 bytes");
 static_assert(sizeof(PowerUpPacket) == 9, "PowerUpPacket must be 9 bytes");
 static_assert(sizeof(PowerResultPacket) == 7, "PowerResultPacket must be 7 bytes");
@@ -166,7 +175,7 @@ Preferences prefs;
 
 #define PREFS_NAMESPACE "battleship"
 #define SAVE_MAGIC       0xBA77CAFE
-#define SAVE_VERSION     3  // v3 added PowerState. An older save is ignored (fresh game).
+#define SAVE_VERSION     4  // v4 changed PowerState (loadouts, use counters). An older save is ignored (fresh game).
 
 typedef struct __attribute__((packed)) {
   uint32_t magic;
@@ -204,6 +213,7 @@ int  getTeamIDFromMAC(const uint8_t *mac);
 void handleRegistration(const uint8_t *mac, RegistrationPacket *pkt);
 void handleAttack(const uint8_t *mac, AttackPacket *pkt);
 void handlePowerUp(const uint8_t *mac, PowerUpPacket *pkt);
+void printLoadout(int idx);
 void sendRegAck(const uint8_t *mac, uint8_t status);
 void sendFeedback(const uint8_t *mac, uint8_t targetId, uint8_t x, uint8_t y, uint8_t result);
 void sendPowerResult(const uint8_t *mac, const PowerOutcome &out, uint8_t targetId);
@@ -337,6 +347,9 @@ void processPacket(const uint8_t *mac, const uint8_t *data, int len) {
     PowerUpPacket pkt;
     memcpy(&pkt, data, sizeof(pkt));
     handlePowerUp(mac, &pkt);
+  } else if (len == 33) {
+    Serial.println("WARNING: ignored a 33-byte registration - that is the OLD format. "
+                   "Registration is now 34 bytes: the last byte is the loadout (see PARTICIPANT_GUIDE.md).");
   } else {
     Serial.print("WARNING: ignored a packet of unexpected size (");
     Serial.print(len);
@@ -368,16 +381,14 @@ void handleRegistration(const uint8_t *mac, RegistrationPacket *pkt) {
 
   uint8_t result = tryRegister(macTeam, pkt->team_id, pkt->team_name, pkt->ships,
                                 roundState, registered, teamNames, storedShips, grid,
-                                remainingShips, eliminated);
+                                remainingShips, eliminated, pkt->loadout, &powerState);
 
   switch (result) {
     case REG_OK:
-      // A fresh (re)registration may have moved the ships, so any earlier
-      // mine could now sit on a ship cell: the team places it again.
-      powerState.mineX[macTeam - 1] = NO_CELL;
-      powerState.mineY[macTeam - 1] = NO_CELL;
-      powerState.used[macTeam - 1] &= (uint8_t)~(1u << (POWER_MINE - 1));
+      // tryRegister() already reset this team's power-ups and stored its loadout.
       addLog("TEAM %d (%s) registered", macTeam, teamNames[macTeam - 1]);
+      Serial.print("[organizer] TEAM "); Serial.print(macTeam);
+      Serial.print(" loadout: "); printLoadout(macTeam - 1); Serial.println();
       sendRegAck(mac, REG_OK);
       broadcastTurnUpdate();
       saveGameState();
@@ -406,6 +417,14 @@ void handleRegistration(const uint8_t *mac, RegistrationPacket *pkt) {
 
     case REG_FAIL_BAD_SHIPS:
       addLog("TEAM %d registration rejected (invalid ship layout)", macTeam);
+      sendRegAck(mac, REG_REJECTED);
+      break;
+
+    case REG_FAIL_BAD_LOADOUT:
+      addLog("TEAM %d registration rejected (invalid loadout)", macTeam);
+      Serial.print("[organizer] TEAM "); Serial.print(macTeam);
+      Serial.print(" sent loadout byte 0x"); Serial.print(pkt->loadout, HEX);
+      Serial.println(" - need exactly 2 of SONAR/SALVO/MINE/DOUBLE and 1 of SMOKE/REPAIR");
       sendRegAck(mac, REG_REJECTED);
       break;
 
@@ -572,16 +591,17 @@ const char *powerFailText(uint8_t code) {
     case PWR_FAIL_NOT_RUNNING:       return "game is not running";
     case PWR_FAIL_WRONG_TURN:        return "not their turn";
     case PWR_FAIL_DEAD:              return "they are eliminated";
-    case PWR_FAIL_ALREADY_USED:      return "already used";
-    case PWR_FAIL_BUDGET:            return "no power-ups left in the budget";
+    case PWR_FAIL_NO_USES_LEFT:      return "no uses left";
+    case PWR_FAIL_NOT_IN_LOADOUT:    return "not in their loadout";
     case PWR_FAIL_BAD_TARGET:        return "bad target";
     case PWR_FAIL_BAD_COORDS:        return "bad coordinates";
     case PWR_FAIL_ALREADY_HIT:       return "a cell was already attacked";
     case PWR_FAIL_BAD_SHAPE:         return "cells don't form a valid pattern";
-    case PWR_FAIL_NOT_SETUP:         return "mines only before the game starts";
-    case PWR_FAIL_MINE_ON_SHIP:      return "mine must be on a water cell";
+    case PWR_FAIL_MINE_ON_SHIP:      return "mine must be on an untouched water cell";
     case PWR_FAIL_NOTHING_TO_REPAIR: return "that cell is not a hit";
     case PWR_FAIL_NOT_REGISTERED:    return "not registered";
+    case PWR_FAIL_MINE_ACTIVE:       return "a mine is already on the board";
+    case PWR_FAIL_SHIELD_COOLDOWN:   return "no shield on two turns in a row";
   }
   return "rejected";
 }
@@ -612,7 +632,7 @@ void handlePowerUp(const uint8_t *mac, PowerUpPacket *pkt) {
 
   switch (power) {
     case POWER_MINE:
-      // NOT in the public log - that would give the mine away.
+      addLog("TEAM %d armed a MINE", macTeam);          // the position stays secret
       Serial.print("[organizer] TEAM "); Serial.print(macTeam);
       Serial.print(" armed a mine at ("); Serial.print(xs[0]); Serial.print(","); Serial.print(ys[0]); Serial.println(")");
       break;
@@ -653,7 +673,7 @@ void handlePowerUp(const uint8_t *mac, PowerUpPacket *pkt) {
 
   logGameOverIfJustEnded(previousRoundState);
   sendPowerResult(mac, out, pkt->target_id);
-  if (power != POWER_MINE) broadcastTurnUpdate();   // a mine costs no turn
+  broadcastTurnUpdate();   // every power-up (the mine too) uses the turn
   saveGameState();
 }
 
@@ -816,6 +836,7 @@ void cmdSkipTurn() {
   }
   uint8_t previousRoundState = roundState;
   addLog("Organizer manually skipped TEAM %d's turn", currentTurnIndex + 1);
+  powerState.lastShield[currentTurnIndex] = 0;   // a skipped turn counts as a turn without a Shield
   advanceTurnPS(roundState, currentTurnIndex, eliminated, registered, powerState);
   logGameOverIfJustEnded(previousRoundState);
   broadcastTurnUpdate();
@@ -856,16 +877,14 @@ void printEscapedJSON(const char *s) {
 // Full state snapshot - sent in response to "GET_STATE".
 // This is PUBLIC: it goes to the projector. So grids and HP go through
 // displayCell()/displayRemaining() (smoke hides recent shots), mines are
-// not included at all, the shield is only a boolean, and the mine's bit
-// is removed from "used".
+// not included at all, the shield is only a boolean, and "used" only says
+// which powers a team has used at least once (the public log says so too).
 void sendStateJSON() {
   Serial.print("{\"type\":\"state\",\"round_state\":");
   Serial.print(roundState);
   Serial.print(",\"current_turn\":");
   Serial.print(roundState == STATE_RUNNING ? currentTurnIndex + 1 : 0);
   Serial.print(",\"teams\":[");
-
-  const uint8_t publicUsedMask = (uint8_t)~(1u << (POWER_MINE - 1));
 
   for (int i = 0; i < MAX_TEAMS; i++) {
     if (i > 0) Serial.print(",");
@@ -879,7 +898,7 @@ void sendStateJSON() {
     Serial.print(displayRemaining(powerState, i, remainingShips[i], grid[i]));
     Serial.print(",\"shield\":"); Serial.print(powerState.shieldOn[i] ? "true" : "false");
     Serial.print(",\"smoke\":"); Serial.print(powerState.smokeOn[i] ? "true" : "false");
-    Serial.print(",\"used\":"); Serial.print(powerState.used[i] & publicUsedMask);
+    Serial.print(",\"used\":"); Serial.print(powerUsedMask(powerState, i));
     Serial.print(",\"grid\":[");
     for (int r = 0; r < GRID_SIZE; r++) {
       Serial.print("[");
@@ -952,6 +971,20 @@ const char *roundStateName(uint8_t s) {
   return "UNKNOWN";
 }
 
+// Organizer view of one team's loadout and how many uses are left, e.g.
+//   SONAR x2, MINE x1, SMOKE x2, SHIELD
+void printLoadout(int idx) {
+  bool any = false;
+  for (int p = 1; p <= POWER_COUNT; p++) {
+    if (!(powerState.loadout[idx] & (1u << (p - 1)))) continue;
+    if (any) Serial.print(", ");
+    Serial.print(powerName(p));
+    if (p != POWER_SHIELD) { Serial.print(" x"); Serial.print(powerUsesLeft(powerState, idx, p)); }
+    any = true;
+  }
+  if (!any) Serial.print("(none)");
+}
+
 void printStatus() {
   Serial.println();
   Serial.println("=== STATUS ===");
@@ -967,8 +1000,7 @@ void printStatus() {
       Serial.print(eliminated[i] ? "ELIMINATED" : "ALIVE");
       Serial.print(" / ships remaining: ");
       Serial.print(remainingShips[i]);
-      Serial.print(" / power-ups used: ");
-      Serial.print(powerCount(powerState.used[i]));
+      Serial.print(" / loadout: "); printLoadout(i);
       if (powerState.mineX[i] != NO_CELL) {
         Serial.print(" / mine at ("); Serial.print(powerState.mineX[i]);
         Serial.print(","); Serial.print(powerState.mineY[i]); Serial.print(")");

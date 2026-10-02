@@ -18,23 +18,32 @@ shows the whole war on a projector. Everything runs offline over ESP-NOW
  virtual_display.py  (fake touch screen in a browser, for use before the real TFTs arrive)
 ```
 
+> **Protocol change (v4 - loadouts).** Registration is now **34 bytes**: the
+> last byte is the team's *loadout* (the powers it chose). Central ignores the
+> old 33-byte registration and prints a warning saying so. Every team sketch
+> (`participant_node.ino`, `participant_starter.ino`, and whatever participants
+> write) must (1) let the team choose its loadout *before* it registers and
+> (2) send the 34-byte packet. See section 3b and `PARTICIPANT_GUIDE.md`.
+
 ### Organizer side (you)
 | File | What it is | Runs on |
 |---|---|---|
-| `central_node.ino` | The referee. Owns all grids, turns, eliminations. Saves state to flash so a power blip doesn't lose the match. | Central ESP32 |
-| `game_logic.h` | **All the game rules** in one header (ship validation incl. diagonals, registration, attacks, turn order). Must sit in the same folder as `central_node.ino`. | (included by Central and the test) |
+| `central_node.ino` | The referee. Owns all grids, turns, eliminations, loadouts and power-ups. Saves state to flash so a power blip doesn't lose the match. | Central ESP32 |
+| `game_logic.h` | **All the game rules** in one header (ship validation incl. diagonals, registration, loadouts, attacks, power-ups, turn order). Must sit in the same folder as `central_node.ino`. | (included by Central and the tests) |
 | `participant_node.ino` | The finished team-board firmware with the touch UI. Same file for all 4 boards; only the CONFIGURATION block changes. | 4 team ESP32s |
 | `VirtualTFT.h` | Stand-in for the display driver. Only used when `USE_VIRTUAL_DISPLAY` is switched on. Keep next to `participant_node.ino`. | team ESP32 |
 | `dashboard.py` | Projector dashboard + organizer buttons (START, FORCE START, SKIP TURN, RESET) + per-round match logs. | laptop |
 | `virtual_display.py` | A fake 240×320 touch screen in your browser, fed by a team board over USB. | laptop |
 | `mock_central.py` | A fake Central so you can test `dashboard.py` with no ESP32. | laptop |
-| `central_logic_test.cpp` | Desktop test of the rules (77 checks, no hardware). | laptop |
+| `central_logic_test.cpp` | Desktop test of the core rules (77 checks, no hardware). | laptop |
+| `powerup_test.cpp` | Desktop test of loadouts and every power-up (138 checks, no hardware). | laptop |
 
 ### Participant side (what you hand out)
 | File | What it is |
 |---|---|
 | `participant_starter.ino` | Skeleton: message formats + a numbered TODO list. **No ESP-NOW code** — learning that is part of the challenge. |
-| `PARTICIPANT_GUIDE.md` | Everything Central expects: grid and ship rules, byte-level message formats, game flow, example bytes, troubleshooting. |
+| `meraz_loadout.h` | The "choose your powers" step as a ready-made Serial menu plus a validity check. No radio code. Participants include it and call `selectLoadoutSerial()` before they register. |
+| `PARTICIPANT_GUIDE.md` | Everything Central expects: grid and ship rules, **the loadout and power-ups**, byte-level message formats, game flow, example bytes, troubleshooting. |
 
 > **Do not hand out** `participant_node.ino` — it contains the full radio
 > setup that participants are meant to work out themselves.
@@ -81,7 +90,16 @@ g++ -std=c++11 -Wall -Wextra central_logic_test.cpp -o central_logic_test
 ```
 Expect `77/77 checks passed`. This runs the *same* `game_logic.h` the Central uses.
 
-**b) Test the dashboard with a fake Central.** `pip install flask pyserial`, then
+**b) Test loadouts and power-ups.** Same folder:
+```
+g++ -std=c++11 -Wall -Wextra powerup_test.cpp -o powerup_test
+./powerup_test
+```
+Expect `138/138 checks passed`. It covers loadout validation, registration and reconnection
+with a loadout, the 2-uses limits, mines placed during the game, the no-back-to-back
+Shield, smoke and every other power.
+
+**c) Test the dashboard with a fake Central.** `pip install flask pyserial`, then
 create a virtual serial pair (Linux/Mac: `socat -d -d pty,raw,echo=0 pty,raw,echo=0`;
 Windows: com0com). Set `MOCK_PORT` in `mock_central.py` to one end and
 `SERIAL_PORT` in `dashboard.py` to the other. Run `python mock_central.py`, then
@@ -106,7 +124,8 @@ does **not** test wiring, SPI speed, backlight or touch calibration.
 ### Level 3 — two ESP32s (Central + one team board)
 Flash `central_node.ino` (+`game_logic.h`) to one board and `participant_node.ino`
 to the other. Fill in the two MAC addresses (see section 3, steps 3–6). Open the
-Central's Serial Monitor and type `STATUS`: the team should show **REGISTERED**.
+Central's Serial Monitor and type `STATUS`: the team should show **REGISTERED** and its
+loadout (e.g. `SONAR PING x2, SMOKE SCREEN x2, SHIELD, DOUBLE ATTACK x2`).
 Try `GRID`, then `FORCE_START` — it must refuse (needs at least 2 registered teams).
 
 ### Level 4 — three ESP32s (Central + two team boards)
@@ -141,6 +160,8 @@ Follow the four steps under "When the real displays arrive" above.
    `start_y` is always the ship's first cell. The grid is 7×7 (x and y run 0–6), so a size-5
    diagonal can start anywhere a 5×5 block of free cells fits.
 8. **`ESPNOW_CHANNEL`** must be identical on all boards (default `1`).
+   **Loadout:** nothing to configure on Central. Each team picks 2 attack powers
+   and 1 defence power on its own board *before* it registers (see section 3b).
 9. **Re-upload** `central_node.ino` (with `game_logic.h` in the same folder) and
    each team board with its own config.
 10. **Connect Central to the laptop** by USB for the whole event.
@@ -160,6 +181,40 @@ between matches. The first option is far easier.
 
 ---
 
+## 3b. Power-ups and loadouts (v4 rules)
+
+Every team always has the **Single Strike** (the normal attack, unlimited) and
+the **Shield** (unlimited, but never on two of its own turns in a row). On top
+of that, each team picks **2 attack powers** (Sonar, Salvo, Mine, Double Attack)
+and **1 defence power** (Smoke Screen or Repair) *before it registers*. The
+choice is one byte at the end of the registration packet and is fixed for the
+match.
+
+| Power | Effect | Uses |
+|---|---|---|
+| Sonar Ping | 3x3 area of an opponent: ship-cell count, told to the user only | 2 |
+| Salvo | 3 consecutive cells in one row/column of one opponent | 2 |
+| Mine | hidden trap on one of your own untouched water cells, placed **during the game** (uses the turn); one on the board at a time; stays until shot; the shooter loses their next turn | 2 placements |
+| Double Attack | any 2 different cells of one opponent | 2 |
+| Smoke Screen | until the owner's next turn (even if unused): shots on them report UNKNOWN to the attacker and are hidden on the dashboard; sonar is jammed; an elimination is never hidden | 2 |
+| Repair | flip one of your own hit cells back to intact | 2 |
+| Shield | 3x3 block (centre 1..5), until the owner's next turn: shots in it are BLOCKED; no Shield on two consecutive turns | unlimited |
+
+Every power-up uses the turn; a rejected one uses neither the turn nor a use.
+A turn lost to a mine counts as the "next turn" for the shield rule.
+
+**What the public dashboard shows:** that a power was used (`TEAM 2 armed a MINE`,
+`TEAM 1 used SONAR PING on TEAM 3`), never mine positions, shield positions,
+sonar counts or loadouts. **What you see:** the Serial Monitor prints each team's
+loadout on registration and every secret as `[organizer]` lines; `STATUS` shows
+loadouts with uses left, `GRID` shows hidden mines (`m`) and shields (`+`).
+
+**Registration rejects** an illegal loadout (not exactly 2 attack + 1 defence, or a
+stray bit). A **reconnect** must send the same layout *and* the same loadout; use
+counts, mines and shields survive the reconnect.
+
+---
+
 ## 4. Game test checklist
 
 **Registration**
@@ -168,11 +223,20 @@ between matches. The first option is far easier.
 - [ ] An invalid layout (wrong sizes, overlap, off the grid) is rejected
 - [ ] Diagonal ships register fine; a diagonal off any edge or crossing another ship is rejected
 - [ ] All 4 registered → Central moves SETUP → READY
+- [ ] A legal loadout registers and shows in `STATUS`; an illegal one (e.g. only 1 attack power, both defence powers) is rejected and logged
+- [ ] An old 33-byte registration is ignored with a warning that says the format changed
 
 **Attacks**
 - [ ] Miss → grid shows `M`, turn passes; hit → `H`, turn passes
 - [ ] Re-attacking a cell, bad coordinates, self-attack, out-of-turn → INVALID, and the turn is **not** used up
 - [ ] The final hit on a team eliminates it (attacker gets SUNK)
+
+**Power-ups**
+- [ ] A power that isn't in the team's loadout is rejected (no turn used); each chosen power works twice, the third use is rejected
+- [ ] Shield works every other turn forever; a second Shield in a row is rejected without using the turn
+- [ ] Mine: can't be placed before the game or out of turn; one at a time; hit by an opponent → they get MINE and skip a turn; a second mine can be placed afterwards; no third
+- [ ] Smoke: attacker gets UNKNOWN, the dashboard shows no change until the smoke ends at the owner's next turn
+- [ ] Repair brings back a hit cell; Sonar, Salvo and Double behave as in section 3b
 
 **Turns & rounds**
 - [ ] Eliminated teams are skipped in the turn order
@@ -184,7 +248,8 @@ between matches. The first option is far easier.
 - [ ] Powering off one team board doesn't disturb the others; powering it back on RECONNECTS with hits/misses intact
 - [ ] A reconnect with a *different* layout from the same MAC is rejected
 - [ ] Restarting `dashboard.py`, or refreshing the browser, restores the full state
-- [ ] **Central power-loss recovery:** power-cycle Central mid-round; it restores exactly where it was
+- [ ] **Central power-loss recovery:** power-cycle Central mid-round; it restores exactly where it was, including loadouts, uses left, mines and shields
+- [ ] A reconnect with the same layout but a different loadout is rejected
 
 **Match log**
 - [ ] `match_logs/round_1_*.txt` is created and filled; `RESET` opens `round_2_*.txt`
@@ -200,6 +265,9 @@ between matches. The first option is far easier.
 | `FATAL: esp_now_init() failed` | Board/core issue | Re-flash; check the board type in Tools → Board |
 | `WARNING: could not add ESP-NOW peer` | Bad MAC array | Look for typos/missing commas |
 | `WARNING: ignored a packet of unexpected size` | Packet structs have drifted | `central_node.ino`/`game_logic.h` and the team sketch must define identical structs |
+| `WARNING: ignored a 33-byte registration - that is the OLD format` | The team sketch still sends the pre-loadout registration | Add the loadout byte: registration is 34 bytes (`PARTICIPANT_GUIDE.md`, section 4) |
+| Team is rejected and the log says `invalid loadout` | Not exactly 2 attack + 1 defence power, or a stray bit | Serial Monitor shows the byte received; legal bytes are listed in the guide, section 3 |
+| A power-up is rejected | Wrong turn, not in the loadout, no uses left, bad cells, 2nd mine, or 2 Shields in a row | The public log says why (`TEAM 2 SHIELD rejected (no shield on two turns in a row)`) |
 | `dashboard.py` / `virtual_display.py` can't open the port | Wrong port name, or the Arduino Serial Monitor has it open | Fix the port; close the Serial Monitor |
 | Virtual display page says "not connected" | Same as above, or the board isn't flashed with `USE_VIRTUAL_DISPLAY` | Check both |
 | Virtual screen stays black | Board was already running before the page opened | Click **Repaint screen** (or press the board's reset button) |
@@ -224,6 +292,7 @@ between matches. The first option is far easier.
 
 ## 7. Already built beyond the original plan
 
+- Loadouts (2 attack + 1 defence power chosen before registering) and the power-ups: Sonar, Salvo, Mine, Double Attack, Smoke Screen, Repair, Shield, with their own tests
 - Persistent per-round match logs; Central power-loss protection (state saved to flash)
 - ESP32 core 2.x/3.x compatibility in every sketch
 - `FORCE_START` (play with 2–3 teams) and diagonal ships

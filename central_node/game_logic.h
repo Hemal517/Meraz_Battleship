@@ -13,6 +13,22 @@
    shows it as a second tab), and next to central_logic_test.cpp /
    powerup_test.cpp when compiling the test harnesses.
 
+   v4 CHANGES (loadouts - the power-up RULES changed, see below):
+     - Every team now picks a LOADOUT before it registers and sends it in
+       the registration packet: exactly 2 optional attack powers (Sonar,
+       Salvo, Mine, Double Attack) and 1 optional defence power (Smoke
+       Screen or Repair). Single Strike (the normal attack) and Shield are
+       compulsory and always available.
+     - Sonar, Salvo, Mine, Double, Smoke and Repair can each be used
+       POWER_USES (2) times per game. Shield and Single Strike are unlimited,
+       except that a team may not Shield on two of its turns in a row.
+     - Mines are now placed DURING the game, on your own turn (it uses the
+       turn), one active mine at a time, 2 placements per game.
+     - tryRegister() got two OPTIONAL trailing parameters (loadout, ps);
+       without them it behaves exactly as before.
+     - Removed: POWERUP_BUDGET, PowerState.used[], PWR_FAIL_BUDGET,
+       PWR_FAIL_NOT_SETUP.
+
    v3 CHANGES (all backwards compatible):
      - tryAttack() got two OPTIONAL trailing parameters. Without them it
        behaves exactly as before, so central_logic_test.cpp still passes.
@@ -71,6 +87,7 @@
 #define REG_FAIL_BAD_NAME       11
 #define REG_FAIL_BAD_SHIPS      12
 #define REG_FAIL_GAME_STARTED   13
+#define REG_FAIL_BAD_LOADOUT    14   // v4: not exactly 2 attack powers + 1 defence power
 
 // Same idea for tryAttack() - these never go on the wire either.
 // central_node.ino maps all of them to RESULT_INVALID for the
@@ -96,17 +113,30 @@
 
 #define POWER_SONAR   1   // 3x3 area on an opponent -> number of ship cells, private
 #define POWER_SALVO   2   // 3 cells in a row/column on ONE opponent
-#define POWER_MINE    3   // hidden trap on one of your own WATER cells (placed before the game)
+#define POWER_MINE    3   // hidden trap on one of your own untouched WATER cells (placed during the game)
 #define POWER_REPAIR  4   // flip one of your hit cells back to intact
 #define POWER_SMOKE   5   // until your next turn, attacks on you are not reported to anyone
 #define POWER_SHIELD  6   // until your next turn, a 3x3 block of your grid can't be hit
 #define POWER_DOUBLE  7   // 2 cells (any two) on ONE opponent
 #define POWER_COUNT   7
 
-// How many DIFFERENT power-ups one team may use per game (each can be
-// used once). 7 = all of them. Set it to 3 to make teams CHOOSE.
-// The mine counts toward this budget.
-#define POWERUP_BUDGET 7
+// ---- LOADOUT (v4) ----------------------------------------------------
+// A loadout is ONE byte: bit (power-1) is set for every chosen power, so
+//   Sonar 0x01, Salvo 0x02, Mine 0x04, Repair 0x08, Smoke 0x10,
+//   Shield 0x20, Double 0x40.
+// A legal loadout has exactly 2 bits from the ATTACK set and exactly 1
+// from the DEFENCE set. The SHIELD bit is compulsory, so it may be sent
+// set or clear - Central ignores it and always stores it as set. Any other
+// bit (0x80) makes the loadout illegal.
+#define LOADOUT_ATTACK_MASK   ((1u << (POWER_SONAR - 1)) | (1u << (POWER_SALVO - 1)) | (1u << (POWER_MINE - 1)) | (1u << (POWER_DOUBLE - 1)))   // 0x47
+#define LOADOUT_DEFENCE_MASK  ((1u << (POWER_REPAIR - 1)) | (1u << (POWER_SMOKE - 1)))                                                          // 0x18
+#define LOADOUT_SHIELD_BIT    (1u << (POWER_SHIELD - 1))                                                                                        // 0x20
+#define LOADOUT_ATTACK_PICKS  2
+#define LOADOUT_DEFENCE_PICKS 1
+
+// How many times each OPTIONAL power may be used per game. For the Mine
+// this counts placements. Shield and Single Strike are unlimited.
+#define POWER_USES 2
 
 #define NO_CELL 255       // "no mine placed"
 
@@ -123,16 +153,17 @@
 #define PWR_FAIL_NOT_RUNNING    43
 #define PWR_FAIL_WRONG_TURN     44
 #define PWR_FAIL_DEAD           45
-#define PWR_FAIL_ALREADY_USED   46
-#define PWR_FAIL_BUDGET         47
+#define PWR_FAIL_NO_USES_LEFT   46   // all POWER_USES uses of this power are spent
+#define PWR_FAIL_NOT_IN_LOADOUT 47   // the team did not choose this power
 #define PWR_FAIL_BAD_TARGET     48
 #define PWR_FAIL_BAD_COORDS     49
 #define PWR_FAIL_ALREADY_HIT    50
 #define PWR_FAIL_BAD_SHAPE      51
-#define PWR_FAIL_NOT_SETUP      52   // mines can only be placed before the game starts
-#define PWR_FAIL_MINE_ON_SHIP   53
+#define PWR_FAIL_MINE_ON_SHIP   53   // a mine must go on an untouched WATER cell
 #define PWR_FAIL_NOTHING_TO_REPAIR 54
 #define PWR_FAIL_NOT_REGISTERED 55
+#define PWR_FAIL_MINE_ACTIVE    56   // only one mine may be on the board at a time
+#define PWR_FAIL_SHIELD_COOLDOWN 57  // no Shield on two of your turns in a row
 
 // =====================================================================
 // SHIP PLACEMENT
@@ -241,27 +272,76 @@ inline void advanceTurn(uint8_t &roundState, uint8_t &currentTurnIndex, bool eli
 //
 // "One round" for SHIELD and SMOKE means: from the moment the owner
 // uses it until the owner's NEXT turn begins (i.e. every other team
-// gets exactly one turn against it).
+// gets exactly one turn against it). A smoke screen ends then even if
+// nobody attacked.
 
 typedef struct __attribute__((packed)) {
-  uint8_t used[MAX_TEAMS];                              // bit (power-1) set = already used
+  uint8_t loadout[MAX_TEAMS];                           // v4: normalised loadout byte (includes the shield bit)
+  uint8_t uses[MAX_TEAMS][POWER_COUNT];                 // v4: how many times each power has been used
   uint8_t mineX[MAX_TEAMS], mineY[MAX_TEAMS];           // NO_CELL = none
   uint8_t shieldOn[MAX_TEAMS];
   uint8_t shieldX[MAX_TEAMS], shieldY[MAX_TEAMS];       // centre of the 3x3 block
   uint8_t smokeOn[MAX_TEAMS];
   uint8_t smokeMask[MAX_TEAMS][GRID_SIZE][GRID_SIZE];   // cells shot while smoked (hidden from the dashboard)
   uint8_t skipNext[MAX_TEAMS];                          // lose the next turn (stepped on a mine)
+  uint8_t lastShield[MAX_TEAMS];                        // v4: 1 = this team's last turn was a Shield (no Shield twice in a row)
 } PowerState;
+
+// Forget everything about ONE team's powers (used when it (re)registers).
+inline void resetTeamPower(PowerState &ps, int idx) {
+  ps.loadout[idx] = 0;
+  memset(ps.uses[idx], 0, sizeof(ps.uses[idx]));
+  ps.mineX[idx] = NO_CELL; ps.mineY[idx] = NO_CELL;
+  ps.shieldOn[idx] = 0; ps.shieldX[idx] = 0; ps.shieldY[idx] = 0;
+  ps.smokeOn[idx] = 0;
+  memset(ps.smokeMask[idx], 0, sizeof(ps.smokeMask[idx]));
+  ps.skipNext[idx] = 0;
+  ps.lastShield[idx] = 0;
+}
 
 inline void resetPowerState(PowerState &ps) {
   memset(&ps, 0, sizeof(ps));
   for (int i = 0; i < MAX_TEAMS; i++) { ps.mineX[i] = NO_CELL; ps.mineY[i] = NO_CELL; }
 }
 
-inline int powerCount(uint8_t usedMask) {
+// Number of set bits (used for loadouts).
+inline int powerCount(uint8_t mask) {
   int n = 0;
-  for (int b = 0; b < 8; b++) if (usedMask & (1u << b)) n++;
+  for (int b = 0; b < 8; b++) if (mask & (1u << b)) n++;
   return n;
+}
+
+// True only for a legal loadout: no stray bits, exactly 2 attack powers
+// and exactly 1 defence power. The shield bit may be set or clear.
+inline bool validLoadout(uint8_t loadout) {
+  const uint8_t known = (uint8_t)(LOADOUT_ATTACK_MASK | LOADOUT_DEFENCE_MASK | LOADOUT_SHIELD_BIT);
+  if (loadout & (uint8_t)~known) return false;
+  if (powerCount((uint8_t)(loadout & LOADOUT_ATTACK_MASK)) != LOADOUT_ATTACK_PICKS) return false;
+  if (powerCount((uint8_t)(loadout & LOADOUT_DEFENCE_MASK)) != LOADOUT_DEFENCE_PICKS) return false;
+  return true;
+}
+
+// The form Central stores: chosen powers + the always-on shield bit.
+inline uint8_t normalizeLoadout(uint8_t loadout) {
+  return (uint8_t)((loadout & (LOADOUT_ATTACK_MASK | LOADOUT_DEFENCE_MASK)) | LOADOUT_SHIELD_BIT);
+}
+
+// Uses a team has left of one power. Shield is unlimited (255); a power
+// that is not in the team's loadout has 0.
+inline int powerUsesLeft(const PowerState &ps, int team, int power) {
+  if (power == POWER_SHIELD) return 255;
+  if (power < 1 || power > POWER_COUNT) return 0;
+  if (!(ps.loadout[team] & (1u << (power - 1)))) return 0;
+  int left = POWER_USES - (int)ps.uses[team][power - 1];
+  return left > 0 ? left : 0;
+}
+
+// Bit (power-1) set = this team has used that power at least once.
+// (Shown on the dashboard JSON as "used".)
+inline uint8_t powerUsedMask(const PowerState &ps, int team) {
+  uint8_t m = 0;
+  for (int p = 0; p < POWER_COUNT; p++) if (ps.uses[team][p]) m |= (uint8_t)(1u << p);
+  return m;
 }
 
 inline bool shieldCovers(const PowerState &ps, int team, int x, int y) {
@@ -316,7 +396,11 @@ inline void advanceTurnPS(uint8_t &roundState, uint8_t &currentTurnIndex,
     ps.shieldOn[idx] = 0;       // their protection ends the moment their turn comes round
     clearSmoke(ps, idx);
 
-    if (ps.skipNext[idx]) { ps.skipNext[idx] = 0; continue; }
+    if (ps.skipNext[idx]) {
+      ps.skipNext[idx] = 0;
+      ps.lastShield[idx] = 0;   // the lost turn counts as their "next turn" for the shield rule
+      continue;
+    }
 
     currentTurnIndex = idx;
     return;
@@ -354,11 +438,14 @@ inline uint8_t tryRegister(
   ShipPlacement storedShips[MAX_TEAMS][3],
   uint8_t grid[MAX_TEAMS][GRID_SIZE][GRID_SIZE],
   int remainingShips[MAX_TEAMS],
-  bool eliminated[MAX_TEAMS]
+  bool eliminated[MAX_TEAMS],
+  uint8_t loadout = 0,          // v4 (optional): the team's chosen powers, see LOADOUT_* above
+  PowerState *ps = nullptr      // v4 (optional): pass it to enforce and store the loadout
 ) {
   if (macTeam < 1 || macTeam > MAX_TEAMS) return REG_FAIL_MAC_MISMATCH;
   if (claimedTeamId != macTeam) return REG_FAIL_MAC_MISMATCH;
   if (!validTeamName(teamName)) return REG_FAIL_BAD_NAME;
+  if (ps && !validLoadout(loadout)) return REG_FAIL_BAD_LOADOUT;
 
   uint8_t candidateGrid[GRID_SIZE][GRID_SIZE];
   if (!buildAndValidateGrid(ships, candidateGrid)) return REG_FAIL_BAD_SHIPS;
@@ -372,7 +459,8 @@ inline uint8_t tryRegister(
 
     bool nameMatches = (strncmp(teamNames[idx], teamName, 20) == 0);
     bool shipsAreSame = shipsMatch(storedShips[idx], ships);
-    if (nameMatches && shipsAreSame) return REG_RECONNECTED;
+    bool loadoutIsSame = !ps || (ps->loadout[idx] == normalizeLoadout(loadout));
+    if (nameMatches && shipsAreSame && loadoutIsSame) return REG_RECONNECTED;
     return REG_RECONNECT_REJECTED;  // never touch stored state on mismatch
   }
 
@@ -384,6 +472,10 @@ inline uint8_t tryRegister(
   memcpy(grid[idx], candidateGrid, sizeof(candidateGrid));
   remainingShips[idx] = 9;
   eliminated[idx] = false;
+  if (ps) {
+    resetTeamPower(*ps, idx);                       // a fresh registration starts with a clean slate
+    ps->loadout[idx] = normalizeLoadout(loadout);
+  }
 
   updateRoundStateAfterRegistration(roundState, registered);
   return REG_OK;
@@ -516,6 +608,7 @@ inline uint8_t tryAttack(
   uint8_t reported = RESULT_MISS;
   uint8_t actual = fireAtCell(attackerIdx, targetIdx, x, y, grid, remainingShips, eliminated, ps, reported);
   if (reportedOut) *reportedOut = reported;
+  if (ps) ps->lastShield[attackerIdx] = 0;   // any shot counts as a turn without a Shield
 
   if (ps) advanceTurnPS(roundState, currentTurnIndex, eliminated, registered, *ps);
   else    advanceTurn(roundState, currentTurnIndex, eliminated, registered);
@@ -561,13 +654,18 @@ inline bool cellsInLine(const int xs[], const int ys[], int n) {
 //     SONAR   target + (xs[0],ys[0]) = CENTRE of the 3x3 area (clipped at the edge)
 //     SALVO   target + 3 cells that form a straight consecutive line
 //     DOUBLE  target + 2 different cells (anywhere)
-//     MINE    (xs[0],ys[0]) = one of YOUR OWN water cells; only before the game starts
+//     MINE    (xs[0],ys[0]) = one of YOUR OWN untouched water cells
 //     REPAIR  (xs[0],ys[0]) = one of YOUR OWN hit cells
 //     SHIELD  (xs[0],ys[0]) = CENTRE of the 3x3 block; must be 1..5 so all 9 cells exist
 //     SMOKE   nothing
 //
-// Every power except MINE needs YOUR turn and USES it. A rejected request
-// changes nothing and does not use the turn. Each power works once per game.
+// EVERY power-up needs YOUR turn and USES it (the mine too). A rejected
+// request changes nothing and does not use the turn.
+//   - Except SHIELD, a power must be in the team's loadout and have uses
+//     left (POWER_USES each; a mine placement is one use).
+//   - SHIELD is always available and unlimited, but not on two of the
+//     team's turns in a row.
+//   - MINE: only one on the board at a time; it stays until someone shoots it.
 // Returns PWR_OK / PWR_JAMMED on success, otherwise a PWR_FAIL_* code.
 inline uint8_t tryPowerUp(
   int macTeam, int claimedId, int power, int targetId,
@@ -591,27 +689,19 @@ inline uint8_t tryPowerUp(
 
   const int me = macTeam - 1;
   if (!registered[me]) return PWR_FAIL_NOT_REGISTERED;
-  const uint8_t bit = (uint8_t)(1u << (power - 1));
 
-  // ---- MINE: placed BEFORE the game, costs no turn ----
-  if (power == POWER_MINE) {
-    if (roundState != STATE_SETUP && roundState != STATE_READY) return PWR_FAIL_NOT_SETUP;
-    if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
-    if (grid[me][ys[0]][xs[0]] != CELL_WATER) return PWR_FAIL_MINE_ON_SHIP;
-    if (!(ps.used[me] & bit) && powerCount(ps.used[me]) >= POWERUP_BUDGET) return PWR_FAIL_BUDGET;
-    ps.mineX[me] = (uint8_t)xs[0];            // placing again simply moves it
-    ps.mineY[me] = (uint8_t)ys[0];
-    ps.used[me] |= bit;
-    out.status = PWR_STATUS_OK;
-    return PWR_OK;
-  }
-
-  // ---- everything else: your turn, once per game ----
+  // ---- every power: a running game, YOUR turn ----
   if (roundState != STATE_RUNNING) return PWR_FAIL_NOT_RUNNING;
   if (me != currentTurnIndex) return PWR_FAIL_WRONG_TURN;
   if (eliminated[me]) return PWR_FAIL_DEAD;
-  if (ps.used[me] & bit) return PWR_FAIL_ALREADY_USED;
-  if (powerCount(ps.used[me]) >= POWERUP_BUDGET) return PWR_FAIL_BUDGET;
+
+  // ---- loadout / limits ----
+  if (power == POWER_SHIELD) {
+    if (ps.lastShield[me]) return PWR_FAIL_SHIELD_COOLDOWN;
+  } else {
+    if (!(ps.loadout[me] & (1u << (power - 1)))) return PWR_FAIL_NOT_IN_LOADOUT;
+    if (ps.uses[me][power - 1] >= POWER_USES) return PWR_FAIL_NO_USES_LEFT;
+  }
 
   int tIdx = -1;
   if (power == POWER_SONAR || power == POWER_SALVO || power == POWER_DOUBLE) {
@@ -667,6 +757,18 @@ inline uint8_t tryPowerUp(
       break;
     }
 
+    case POWER_MINE: {
+      if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
+      if (ps.mineX[me] != NO_CELL) return PWR_FAIL_MINE_ACTIVE;
+      uint8_t v = grid[me][ys[0]][xs[0]];
+      if (v == CELL_SHIP || v == CELL_HIT) return PWR_FAIL_MINE_ON_SHIP;
+      if (v == CELL_MISS) return PWR_FAIL_ALREADY_HIT;   // an already-shot cell can never be shot again
+      ps.mineX[me] = (uint8_t)xs[0];
+      ps.mineY[me] = (uint8_t)ys[0];
+      out.status = PWR_STATUS_OK;
+      break;
+    }
+
     case POWER_REPAIR: {
       if (!inGrid(xs[0], ys[0])) return PWR_FAIL_BAD_COORDS;
       if (grid[me][ys[0]][xs[0]] != CELL_HIT) return PWR_FAIL_NOTHING_TO_REPAIR;
@@ -697,9 +799,10 @@ inline uint8_t tryPowerUp(
       return PWR_FAIL_BAD_POWER;
   }
 
-  ps.used[me] |= bit;
+  if (ps.uses[me][power - 1] < 255) ps.uses[me][power - 1]++;   // (Shield is counted too, but never limited)
+  ps.lastShield[me] = (power == POWER_SHIELD) ? 1 : 0;
   advanceTurnPS(roundState, currentTurnIndex, eliminated, registered, ps);
   return code;
 }
 
-#endif  // GAME_LOGIC_H
+#endif  // GAME_LOGIC_H
